@@ -7,7 +7,13 @@ from .models import Paper
 from .sources.common import get_bytes
 
 
-CUTOFF = re.compile(r"^\s*(?:\d+\.?\s*)?(appendix|appendices|references|bibliography|acknowledg(?:e)?ments?)\s*$", re.I | re.M)
+CUTOFF = re.compile(
+    r"^\s*(?:(?:\d+|[A-Z])\s*[.)]?\s+)?"
+    r"(?:appendix|appendices|supplementary\s+(?:material|information)|"
+    r"supplemental\s+(?:material|information)|references|bibliography|"
+    r"acknowledg(?:e)?ments?)\b[^\n]{0,120}$",
+    re.I | re.M,
+)
 
 
 def safe_name(value: str) -> str:

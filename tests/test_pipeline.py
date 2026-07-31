@@ -11,6 +11,7 @@ from paper_digest.backends import OpenAICompatibleBackend
 from paper_digest.budget import Budget
 from paper_digest.config import load_config
 from paper_digest.filtering import llm_rerank, rule_rank
+from paper_digest.fulltext import CUTOFF
 from paper_digest.models import Paper
 from paper_digest.outputs import render_markdown
 from paper_digest.orchestrator import rank_and_select, run_pipeline
@@ -55,7 +56,7 @@ class SelectionTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "Token budget exceeded"):
             budget.reserve("x" * 1000, 20)
 
-    def test_llm_rubric_never_reintroduces_hard_exclusions(self):
+    def test_llm_binary_decision_never_reintroduces_hard_exclusions(self):
         papers = [
             Paper(id="blocked", title="Blocked Medical Paper", selection_decision="hard_exclude", score=-1.0),
             Paper(id="keep", title="Graph Agent", abstract="A graph reasoning agent.", selection_decision="rule_score"),
@@ -66,19 +67,20 @@ class SelectionTests(unittest.TestCase):
 
             def generate_json(self, system, prompt, **kwargs):
                 self.prompt = prompt
-                return {"scores": [{
-                    "id": "p000001", "topic": 35, "problem": 15,
-                    "method": 24, "confidence": 8, "reason": "Direct graph-agent alignment.",
+                return {"decisions": [{
+                    "id": "p000001", "decision": "include",
+                    "reason": "Direct graph-agent alignment.",
                 }]}, {}
 
         backend = FakeRanker()
         ranked = llm_rerank(papers, {"interests": ["graph agent"]}, backend)
         kept = next(paper for paper in ranked if paper.id == "keep")
         blocked = next(paper for paper in ranked if paper.id == "blocked")
-        self.assertEqual(kept.score, 0.82)
+        self.assertEqual(kept.score, 0.0)
         self.assertEqual(kept.selection_decision, "include")
         self.assertEqual(blocked.selection_decision, "hard_exclude")
         self.assertNotIn("Blocked Medical Paper", backend.prompt)
+        self.assertIn("Do not assign scores", backend.prompt)
 
     def test_two_thousand_candidates_are_batched_and_capped_at_five_hundred(self):
         papers = [Paper(id=f"paper-{index}", title=f"Graph Agent {index}", abstract="Graph agent method.") for index in range(2000)]
@@ -89,16 +91,16 @@ class SelectionTests(unittest.TestCase):
             def generate_json(self, system, prompt, **kwargs):
                 self.calls += 1
                 batch = json.loads(prompt.rsplit("Papers:\n", 1)[1])
-                return {"scores": [{
-                    "id": item["id"], "topic": 30, "problem": 12,
-                    "method": 20, "confidence": 8, "reason": "Relevant graph-agent paper.",
+                return {"decisions": [{
+                    "id": item["id"], "decision": "include",
+                    "reason": "Relevant graph-agent paper.",
                 } for item in batch]}, {}
 
         backend = BulkRanker()
         config = {
             "preferences": {"interests": ["graph agent"], "include_keywords": [], "exclude_keywords": [], "categories": []},
             "selection": {
-                "ranker": "llm", "min_score": 0.60, "max_selected_papers": 500,
+                "ranker": "llm", "min_score": 0.0, "max_selected_papers": 500,
                 "llm_batch_size": 40, "llm_abstract_chars": 1600,
                 "llm_max_output_tokens": 4000, "llm_thinking_mode": "disabled",
             },
@@ -107,7 +109,19 @@ class SelectionTests(unittest.TestCase):
         selected = rank_and_select(config, papers, backend=backend)
         self.assertEqual(len(selected), 500)
         self.assertEqual(backend.calls, 50)
-        self.assertTrue(all(paper.score == 0.70 for paper in selected))
+        self.assertTrue(all(paper.selection_decision == "include" for paper in selected))
+
+    def test_llm_binary_decision_rejects_incomplete_batches(self):
+        papers = [Paper(id="one", title="One"), Paper(id="two", title="Two")]
+
+        class IncompleteRanker:
+            def generate_json(self, system, prompt, **kwargs):
+                return {"decisions": [{
+                    "id": "p000000", "decision": "exclude", "reason": "Not relevant.",
+                }]}, {}
+
+        with self.assertRaisesRegex(RuntimeError, "omitted 1 of 2"):
+            llm_rerank(papers, {"interests": ["multimodal"]}, IncompleteRanker())
 
 
 class BackendTests(unittest.TestCase):
@@ -143,6 +157,17 @@ class BackendTests(unittest.TestCase):
         self.assertEqual(usage["output_tokens"], 2)
         self.assertEqual(captured["payload"]["response_format"], {"type": "json_object"})
         self.assertEqual(captured["payload"]["thinking"], {"type": "disabled"})
+
+
+class FullTextTests(unittest.TestCase):
+    def test_main_text_cutoff_recognizes_common_backmatter_headings(self):
+        headings = [
+            "Appendix A: Additional Results", "A. Appendix", "Supplementary Material",
+            "Supplemental Information", "8 References", "Acknowledgments",
+        ]
+        for heading in headings:
+            with self.subTest(heading=heading):
+                self.assertIsNotNone(CUTOFF.search(heading))
 
 
 class OpenReviewTests(unittest.TestCase):

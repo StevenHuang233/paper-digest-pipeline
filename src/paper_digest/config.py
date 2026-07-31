@@ -20,10 +20,14 @@ DEFAULTS: dict[str, Any] = {
         },
     },
     "selection": {
-        "ranker": "llm", "min_score": 0.60, "max_selected_papers": 500,
+        "ranker": "llm", "min_score": 0.0, "max_selected_papers": 500,
         "rules_preview_min_score": 0.0,
         "llm_batch_size": 40, "llm_abstract_chars": 1600,
         "llm_max_output_tokens": 4000, "llm_thinking_mode": "disabled",
+        "decision_policy": (
+            "Include only papers whose primary problem, method, or contribution directly matches at least one "
+            "research interest. Exclude incidental mentions, generic AI relevance, and insufficient evidence."
+        ),
     },
     "review": {"max_papers": 5},
     "backend": {
@@ -96,6 +100,8 @@ def validate_config(config: dict[str, Any], *, require_backend: bool = True) -> 
         raise ValueError("selection.llm_abstract_chars must be >= 200")
     if config["selection"]["ranker"] not in {"rules", "llm"}:
         raise ValueError("selection.ranker must be rules or llm")
+    if config["selection"]["ranker"] == "llm" and not str(config["selection"]["decision_policy"]).strip():
+        raise ValueError("selection.decision_policy is required for llm selection")
     if not 0.0 <= float(config["selection"]["min_score"]) <= 1.0:
         raise ValueError("selection.min_score must be between 0 and 1")
     if int(config["selection"]["max_selected_papers"]) > int(config["discovery"]["max_candidates"]):

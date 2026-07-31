@@ -51,10 +51,14 @@ def job_directory(config: dict) -> Path:
 
 def rank_and_select(
     config: dict, papers: list[Paper], *, backend=None, allow_llm: bool = True,
-    budget=None, min_score_override: float | None = None,
-) -> list[Paper]:
+    budget=None, min_score_override: float | None = None, return_ranked: bool = False,
+) -> list[Paper] | tuple[list[Paper], list[Paper]]:
     ranked = rule_rank(papers, config["preferences"])
     if config["selection"]["ranker"] == "llm" and allow_llm:
+        # rule_rank identifies hard exclusions, but binary LLM selection must not
+        # inherit its score ordering. Restore source order before batching.
+        marked = {(paper.source, paper.id, paper.title): paper for paper in ranked}
+        ranked = [marked[(paper.source, paper.id, paper.title)] for paper in papers]
         backend = backend or make_backend(config["backend"])
         ranked = llm_rerank(
             ranked, config["preferences"], backend,
@@ -62,10 +66,15 @@ def rank_and_select(
             abstract_chars=int(config["selection"]["llm_abstract_chars"]),
             max_output_tokens=int(config["selection"]["llm_max_output_tokens"]),
             thinking_mode=str(config["selection"]["llm_thinking_mode"]),
+            decision_policy=str(config["selection"].get("decision_policy") or ""),
             budget=budget,
         )
-    threshold = float(config["selection"]["min_score"] if min_score_override is None else min_score_override)
-    return [paper for paper in ranked if paper.score >= threshold][: int(config["selection"]["max_selected_papers"])]
+        selected = [paper for paper in ranked if paper.selection_decision == "include"]
+    else:
+        threshold = float(config["selection"]["min_score"] if min_score_override is None else min_score_override)
+        selected = [paper for paper in ranked if paper.score >= threshold]
+    selected = selected[: int(config["selection"]["max_selected_papers"])]
+    return (selected, ranked) if return_ranked else selected
 
 
 def _validate_review(value: dict, evidence_level: str) -> SixPartReview:
@@ -82,7 +91,7 @@ def _validate_review(value: dict, evidence_level: str) -> SixPartReview:
 def _selection_fingerprint(config: dict, papers: list[Paper], effective_ranker: str) -> str:
     value = {
         "preferences": config["preferences"], "selection": config["selection"],
-        "effective_ranker": effective_ranker,
+        "effective_ranker": effective_ranker, "selection_logic_version": "llm-binary-v1",
         "papers": [(paper.source, paper.id, paper.title, paper.abstract) for paper in papers],
     }
     return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
@@ -113,9 +122,12 @@ def run_pipeline(config: dict, config_path: Path, *, dry_run: bool = False, forc
     effective_ranker = "rules_preview" if dry_run and config["selection"]["ranker"] == "llm" else config["selection"]["ranker"]
     fingerprint = _selection_fingerprint(config, candidates, effective_ranker)
     selected_path = run_dir / "selected.json"
+    decisions_path = run_dir / "selection-decisions.json"
     cached_selection = read_json(selected_path, {})
     if not force and cached_selection.get("fingerprint") == fingerprint:
         selected = [Paper.from_dict(item) for item in cached_selection.get("papers", [])]
+        cached_decisions = read_json(decisions_path, {})
+        evaluated = [Paper.from_dict(item) for item in cached_decisions.get("papers", [])] or selected
     else:
         if not dry_run and config["selection"]["ranker"] == "llm":
             backend = make_backend(config["backend"])
@@ -123,27 +135,41 @@ def run_pipeline(config: dict, config_path: Path, *, dry_run: bool = False, forc
             preview_threshold = None
             if dry_run and config["selection"]["ranker"] == "llm":
                 preview_threshold = float(config["selection"]["rules_preview_min_score"])
-            selected = rank_and_select(
+            selected, evaluated = rank_and_select(
                 config, candidates, backend=backend, allow_llm=not dry_run,
-                budget=budget, min_score_override=preview_threshold,
+                budget=budget, min_score_override=preview_threshold, return_ranked=True,
             )
         except Exception:
             state["budget"] = {"reserved_tokens": budget.reserved_tokens, "reserved_usd": round(budget.reserved_usd, 6)}
             write_json(state_path, state)
             raise
         selected_limit = int(config["selection"]["max_selected_papers"])
+        decision_counts = {
+            decision: sum(paper.selection_decision == decision for paper in evaluated)
+            for decision in ("include", "exclude", "hard_exclude", "rule_score")
+        }
+        write_json(decisions_path, {
+            "fingerprint": fingerprint, "ranker_used": effective_ranker,
+            "count": len(evaluated), "decision_counts": decision_counts,
+            "papers": [paper.to_dict() for paper in evaluated],
+        })
         write_json(selected_path, {
             "fingerprint": fingerprint, "ranker_used": effective_ranker,
             "count": len(selected), "limit": selected_limit,
             "limit_reached": len(selected) >= selected_limit,
             "papers": [paper.to_dict() for paper in selected],
         })
+    decision_counts = {
+        decision: sum(paper.selection_decision == decision for paper in evaluated)
+        for decision in ("include", "exclude", "hard_exclude", "rule_score")
+    }
     if dry_run:
         review_target_count = min(len(selected), int(config["review"]["max_papers"]))
         manifest = {
             "status": "dry-run", "candidate_count": len(candidates), "selected_count": len(selected),
             "candidate_limit_reached": len(candidates) >= candidate_limit,
             "selected_limit_reached": len(selected) >= int(config["selection"]["max_selected_papers"]),
+            "selection_decisions": decision_counts,
             "review_limit": int(config["review"]["max_papers"]),
             "review_target_count": review_target_count, "run_dir": str(run_dir),
         }
@@ -196,6 +222,7 @@ def run_pipeline(config: dict, config_path: Path, *, dry_run: bool = False, forc
         "candidate_count": len(candidates), "selected_count": len(selected),
         "candidate_limit_reached": len(candidates) >= candidate_limit,
         "selected_limit_reached": len(selected) >= int(config["selection"]["max_selected_papers"]),
+        "selection_decisions": decision_counts,
         "review_target_count": len(review_targets), "completed_count": len(records),
         "failed_count": len(state["failed"]), "budget": state["budget"], "outputs": outputs, "run_dir": str(run_dir),
     }

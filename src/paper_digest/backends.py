@@ -93,6 +93,10 @@ class CodexBackend:
     def __init__(self, config: dict):
         self.config = config
         self.executable = shutil.which("codex")
+        if os.name == "nt" and self.executable and Path(self.executable).suffix.lower() == ".ps1":
+            cmd_shim = Path(self.executable).with_suffix(".cmd")
+            if cmd_shim.exists():
+                self.executable = str(cmd_shim)
         if not self.executable:
             raise RuntimeError("codex executable was not found on PATH")
 

@@ -37,13 +37,17 @@ base_url = "https://api.crossref.org"
 
 [selection]
 ranker = "llm"                      # rules | llm
-min_score = 0.60                    # fixed LLM rubric: retain scores >= 60/100
-max_selected_papers = 500           # shortlist cap; does not force 500 summaries
+min_score = 0.0                     # rules-only threshold; ignored by binary LLM selection
+max_selected_papers = 500           # safety cap after include/exclude decisions
 rules_preview_min_score = 0.0       # dry-run uses rule scores on a different scale
 llm_batch_size = 40
 llm_abstract_chars = 1600
 llm_max_output_tokens = 4000
 llm_thinking_mode = "disabled"      # V4 Flash defaults to thinking; filtering disables it
+decision_policy = """
+Include only papers whose primary problem, method, or contribution directly matches at least one
+research interest. Exclude incidental mentions, generic AI relevance, and insufficient evidence.
+"""
 
 [review]
 max_papers = 5                      # deep summaries per run; raise separately when desired

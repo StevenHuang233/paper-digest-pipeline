@@ -13,9 +13,9 @@ JSON may be a top-level list or `{ "papers": [...] }`. Fields are `id`, `title`,
 
 ## Selection
 
-`rules` uses title, abstract, category, positive terms, and hard negative terms. `llm` applies hard negatives first, then sends compact metadata and truncated abstracts to the selected backend. The fixed rubric totals 100 points: topic 40, problem/task 20, method 30, and confidence 10. `min_score = 0.60` retains papers scoring at least 60. `max_selected_papers` controls `selected.json`; `review.max_papers` independently controls expensive full-text reviews.
+`rules` uses title, abstract, category, positive terms, and hard negative terms. `llm` applies hard negatives first, then sends compact metadata and truncated abstracts to the selected backend. Write the exact inclusion boundary in `decision_policy`; the model must return `include` or `exclude` plus a short reason for every paper. LLM selection does not use `min_score`; that threshold remains available only for `rules` and dry-run previews. `max_selected_papers` is a safety cap on included papers, while `review.max_papers` independently controls expensive full-text reviews.
 
-For a 2,000-paper scan, use batches around 40, abstract excerpts around 1,600 characters, and a maximum retained shortlist of 500. A dry run intentionally uses rules and `rules_preview_min_score`; its scores are not comparable to the paid 100-point LLM rubric.
+For a 2,000-paper scan, use batches around 40, abstract excerpts around 1,600 characters, and a maximum retained shortlist of 500. Do not impose a hidden per-batch quota. If binary includes exceed the cap, preserve source order and truncate only at the global safety limit. Inspect `selection-decisions.json` to audit all accepted and rejected papers. A dry run intentionally uses rules and `rules_preview_min_score`; its scores are not comparable to the paid binary LLM decisions.
 
 Treat the preference fields differently:
 

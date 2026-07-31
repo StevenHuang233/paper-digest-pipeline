@@ -31,9 +31,9 @@ The state and all artifacts are written below `project.output_dir`. Re-running t
 
 The example configuration discovers at most 2,000 papers and retains at most 500 in `selected.json`. Deep review is a separate limit (`review.max_papers`, default 5), so retaining a large conference shortlist does not accidentally generate 500 full reviews.
 
-With `selection.ranker = "llm"`, every non-excluded paper is scored with one fixed 100-point rubric: topic alignment 0–40, problem/task alignment 0–20, method alignment 0–30, and evidence confidence 0–10. The default threshold is 60. Papers are evaluated in batches of 40 using title, categories, and at most 1,600 abstract characters. Exact negative-keyword matches are removed before the model call.
+With `selection.ranker = "llm"`, every non-excluded paper receives an explicit `include` or `exclude` decision plus a short reason. `selection.decision_policy` is the authoritative natural-language inclusion rule; no numeric score, probability, confidence, rank, or per-batch quota is requested. Papers are evaluated in batches of 40 using title, categories, and at most 1,600 abstract characters. Exact negative-keyword matches are removed before the model call.
 
-The information flow is: source query → at most 2,000 normalized candidates → exact hard exclusions → 40-paper LLM batches → one score for every candidate → threshold and global sort → at most 500 retained papers → at most `review.max_papers` full-text reviews. An incomplete LLM batch response fails visibly instead of silently losing papers.
+The information flow is: source query → at most 2,000 normalized candidates → exact hard exclusions → 40-paper LLM batches → one binary decision for every candidate → at most 500 included papers in source order → at most `review.max_papers` full-text reviews. The 500 limit is only a safety cap, not a score-based Top-K. An incomplete LLM batch response fails visibly instead of silently losing papers. `selection-decisions.json` retains every include/exclude decision for accuracy audits.
 
 Configure the research profile by meaning, not by building one giant keyword list:
 
@@ -44,7 +44,7 @@ Configure the research profile by meaning, not by building one giant keyword lis
 
 The 2,000 cap is a hard safety ceiling, not a promise to retrieve every matching paper when a source contains more than 2,000 results. `candidates.json` and `manifest.json` record `candidate_limit_reached`; when it is true, narrow by date/category or split the job into multiple queries if exhaustive coverage matters.
 
-`--dry-run` remains free: it writes a rule-ranked preview using `rules_preview_min_score`. Rule-preview scores are not predictions of the later 100-point LLM score.
+`--dry-run` remains free: it writes a rule-ranked preview using `rules_preview_min_score`. Rule-preview scores are not predictions of the later binary LLM decisions.
 
 The bundled DeepSeek profile uses the official OpenAI-format endpoint and `deepseek-v4-flash`. It enables JSON Output and disables thinking during selection for lower cost and more predictable structured output. Keep the API key only in `PAPER_DIGEST_API_KEY`; never place it in TOML or Git.
 
