@@ -1,0 +1,168 @@
+from __future__ import annotations
+
+import hashlib
+import json
+from pathlib import Path
+
+from .backends import REVIEW_SCHEMA, make_backend
+from .budget import from_config
+from .filtering import llm_rerank, rule_rank
+from .fulltext import download_and_extract, safe_name
+from .models import Paper, SixPartReview
+from .outputs import write_outputs
+from .review_prompt import SYSTEM_PROMPT, build_review_prompt
+from .sources import fetch_arxiv, fetch_crossref, fetch_json, fetch_openreview
+from .state import read_json, write_json
+
+
+def deduplicate(papers: list[Paper]) -> list[Paper]:
+    seen: set[str] = set()
+    result: list[Paper] = []
+    for paper in papers:
+        key = " ".join(paper.title.lower().split()) or paper.id.lower()
+        if key not in seen:
+            seen.add(key)
+            result.append(paper)
+    return result
+
+
+def discover(config: dict, config_path: Path) -> list[Paper]:
+    source = config["discovery"]["source"]
+    if source == "arxiv":
+        return deduplicate(fetch_arxiv(config))
+    if source == "openreview":
+        return deduplicate(fetch_openreview(config))
+    if source == "crossref":
+        return deduplicate(fetch_crossref(config))
+    return deduplicate(fetch_json(config, config_dir=config_path.parent))
+
+
+def job_directory(config: dict) -> Path:
+    source = config["discovery"]["source"]
+    discriminator = config["discovery"].get("date", "")
+    if source == "openreview":
+        discriminator = config["discovery"]["openreview"]["venue_id"]
+    elif source == "crossref":
+        discriminator = config["discovery"]["crossref"]["conference"]
+    elif source == "json":
+        discriminator = Path(config["discovery"]["json_path"]).stem
+    return Path(config["project"]["output_dir"]) / f"{safe_name(source)}-{safe_name(str(discriminator))}"
+
+
+def rank_and_select(config: dict, papers: list[Paper], *, backend=None, allow_llm: bool = True, budget=None) -> list[Paper]:
+    ranked = rule_rank(papers, config["preferences"])
+    if config["selection"]["ranker"] == "llm" and allow_llm:
+        backend = backend or make_backend(config["backend"])
+        ranked = llm_rerank(
+            ranked, config["preferences"], backend,
+            batch_size=int(config["selection"]["llm_batch_size"]), budget=budget,
+        )
+    threshold = float(config["selection"]["min_score"])
+    return [paper for paper in ranked if paper.score >= threshold][: int(config["selection"]["max_papers"])]
+
+
+def _validate_review(value: dict, evidence_level: str) -> SixPartReview:
+    fields = ["background", "motivation", "idea", "method", "experiments", "conclusion"]
+    missing = [key for key in fields if not str(value.get(key, "")).strip()]
+    if missing:
+        raise ValueError(f"Model review is missing fields: {', '.join(missing)}")
+    clean = {key: str(value[key]).strip() for key in fields}
+    clean["evidence_level"] = evidence_level
+    clean["limitations"] = str(value.get("limitations", "")).strip()
+    return SixPartReview(**clean)
+
+
+def _selection_fingerprint(config: dict, papers: list[Paper], effective_ranker: str) -> str:
+    value = {
+        "preferences": config["preferences"], "selection": config["selection"],
+        "effective_ranker": effective_ranker,
+        "papers": [(paper.source, paper.id, paper.title, paper.abstract) for paper in papers],
+    }
+    return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
+
+
+def run_pipeline(config: dict, config_path: Path, *, dry_run: bool = False, force: bool = False, papers_path: Path | None = None) -> dict:
+    run_dir = job_directory(config)
+    run_dir.mkdir(parents=True, exist_ok=True)
+    if papers_path:
+        loaded = read_json(papers_path, [])
+        records = loaded.get("papers", []) if isinstance(loaded, dict) else loaded
+        candidates = [Paper.from_dict(item) for item in records]
+    else:
+        candidates = discover(config, config_path)
+    write_json(run_dir / "candidates.json", {"papers": [paper.to_dict() for paper in candidates]})
+
+    state_path = run_dir / "state.json"
+    state = read_json(state_path, {"completed": {}, "failed": {}, "budget": {}})
+    budget = from_config(config["budget"])
+    budget.reserved_tokens = int(state.get("budget", {}).get("reserved_tokens", 0))
+    budget.reserved_usd = float(state.get("budget", {}).get("reserved_usd", 0.0))
+    backend = None
+    effective_ranker = "rules_preview" if dry_run and config["selection"]["ranker"] == "llm" else config["selection"]["ranker"]
+    fingerprint = _selection_fingerprint(config, candidates, effective_ranker)
+    selected_path = run_dir / "selected.json"
+    cached_selection = read_json(selected_path, {})
+    if not force and cached_selection.get("fingerprint") == fingerprint:
+        selected = [Paper.from_dict(item) for item in cached_selection.get("papers", [])]
+    else:
+        if not dry_run and config["selection"]["ranker"] == "llm":
+            backend = make_backend(config["backend"])
+        try:
+            selected = rank_and_select(config, candidates, backend=backend, allow_llm=not dry_run, budget=budget)
+        except Exception:
+            state["budget"] = {"reserved_tokens": budget.reserved_tokens, "reserved_usd": round(budget.reserved_usd, 6)}
+            write_json(state_path, state)
+            raise
+        write_json(selected_path, {"fingerprint": fingerprint, "ranker_used": effective_ranker, "papers": [paper.to_dict() for paper in selected]})
+    if dry_run:
+        manifest = {"status": "dry-run", "candidate_count": len(candidates), "selected_count": len(selected), "run_dir": str(run_dir)}
+        write_json(run_dir / "manifest.json", manifest)
+        return manifest
+
+    if selected and backend is None:
+        backend = make_backend(config["backend"])
+    summaries_dir = run_dir / "summaries"
+    summaries_dir.mkdir(exist_ok=True)
+    records: list[dict] = []
+    for paper in selected:
+        key = hashlib.sha256(f"{paper.source}\0{paper.id}\0{paper.title}".encode("utf-8")).hexdigest()[:16]
+        summary_path = summaries_dir / f"{key}.json"
+        if summary_path.exists() and not force:
+            records.append(read_json(summary_path, {}))
+            continue
+        if config["fulltext"]["download_pdf"]:
+            text, evidence_level, evidence_note = download_and_extract(
+                paper, run_dir / "pdfs", int(config["fulltext"]["max_main_text_chars"])
+            )
+        else:
+            text, evidence_level, evidence_note = paper.abstract, "abstract", "PDF download was disabled by configuration."
+        prompt = build_review_prompt(paper, text, evidence_level, config["project"]["language"], evidence_note)
+        try:
+            tokens, cost = budget.reserve(prompt, int(config["backend"]["max_output_tokens"]))
+            value, usage = backend.generate_json(
+                SYSTEM_PROMPT, prompt, max_output_tokens=int(config["backend"]["max_output_tokens"]), schema=REVIEW_SCHEMA
+            )
+            review = _validate_review(value, evidence_level)
+            record = {
+                "paper": paper.to_dict(), "review": review.to_dict(),
+                "generation": {"backend": config["backend"]["type"], "model": config["backend"].get("model", ""), "reserved_tokens": tokens, "reserved_usd": round(cost, 6), "reported_usage": usage},
+            }
+            write_json(summary_path, record)
+            state["completed"][key] = str(summary_path)
+            state["failed"].pop(key, None)
+            records.append(record)
+        except Exception as exc:
+            state["failed"][key] = f"{type(exc).__name__}: {exc}"
+            write_json(state_path, state)
+            if "budget exceeded" in str(exc).lower():
+                break
+    state["budget"] = {"reserved_tokens": budget.reserved_tokens, "reserved_usd": round(budget.reserved_usd, 6)}
+    write_json(state_path, state)
+    outputs = write_outputs(run_dir, records, list(config["output"]["formats"]), bool(config["output"]["compile_pdf"]))
+    manifest = {
+        "status": "complete" if len(records) == len(selected) else "partial",
+        "candidate_count": len(candidates), "selected_count": len(selected), "completed_count": len(records),
+        "failed_count": len(state["failed"]), "budget": state["budget"], "outputs": outputs, "run_dir": str(run_dir),
+    }
+    write_json(run_dir / "manifest.json", manifest)
+    return manifest

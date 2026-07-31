@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom" xmlns:opensearch="http://a9.com/-/spec/opensearch/1.1/" xmlns:arxiv="http://arxiv.org/schemas/atom">
+  <opensearch:totalResults>1</opensearch:totalResults>
+  <entry>
+    <id>http://arxiv.org/abs/2607.12345v1</id>
+    <updated>2026-07-28T12:00:00Z</updated>
+    <published>2026-07-28T12:00:00Z</published>
+    <title>Graph Agents for Retrieval</title>
+    <summary>We combine graph neural networks with retrieval agents.</summary>
+    <author><name>Alice Example</name></author>
+    <category term="cs.LG" />
+    <link href="https://arxiv.org/abs/2607.12345v1" rel="alternate" type="text/html" />
+    <link href="https://arxiv.org/pdf/2607.12345v1" rel="related" type="application/pdf" />
+  </entry>
+</feed>
+

@@ -1,0 +1,44 @@
+name: Daily paper digest
+
+on:
+  schedule:
+    - cron: "30 1 * * *"
+  workflow_dispatch:
+    inputs:
+      date:
+        description: "arXiv submission date (YYYY-MM-DD, today, or yesterday)"
+        required: false
+        default: "yesterday"
+      max_papers:
+        description: "Maximum papers to summarize"
+        required: false
+        default: "5"
+
+jobs:
+  digest:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      PAPER_DIGEST_API_KEY: ${{ secrets.PAPER_DIGEST_API_KEY }}
+      PAPER_DIGEST_BASE_URL: ${{ vars.PAPER_DIGEST_BASE_URL }}
+      PAPER_DIGEST_MODEL: ${{ vars.PAPER_DIGEST_MODEL }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -e ".[pdf]"
+      - name: Generate digest
+        shell: bash
+        run: |
+          digest_date="${{ inputs.date || 'yesterday' }}"
+          max_papers="${{ inputs.max_papers || '5' }}"
+          paper-digest run --config config.example.toml --date "$digest_date" --max-papers "$max_papers"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: paper-digest-${{ github.run_id }}
+          path: outputs/
+          if-no-files-found: warn

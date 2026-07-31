@@ -1,0 +1,4 @@
+interface:
+  display_name: "Daily Paper Digest"
+  short_description: "Find and review papers on a controlled budget"
+  default_prompt: "Use $daily-paper-digest to find papers matching my interests and produce six-part reviews."

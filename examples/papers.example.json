@@ -1,0 +1,17 @@
+{
+  "papers": [
+    {
+      "id": "example-001",
+      "title": "Example Graph Learning Paper",
+      "abstract": "A placeholder record showing the normalized conference-import format.",
+      "authors": ["A. Researcher", "B. Researcher"],
+      "published": "2026-07-28",
+      "venue": "ExampleConf 2026",
+      "categories": ["graph learning"],
+      "url": "https://example.org/paper/001",
+      "pdf_url": "https://example.org/paper/001.pdf",
+      "source": "json"
+    }
+  ]
+}
+

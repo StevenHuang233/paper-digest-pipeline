@@ -1,0 +1,26 @@
+[project]
+language = "zh-CN"
+output_dir = "../../.test-output"
+
+[preferences]
+interests = ["graph learning", "retrieval agents"]
+include_keywords = ["graph"]
+exclude_keywords = []
+categories = []
+
+[discovery]
+source = "json"
+json_path = "../../examples/papers.example.json"
+max_candidates = 10
+
+[selection]
+ranker = "rules"
+min_score = 0.0
+max_papers = 1
+
+[backend]
+type = "codex"
+
+[output]
+formats = ["json", "markdown"]
+compile_pdf = false

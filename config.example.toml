@@ -1,0 +1,66 @@
+[project]
+name = "my-paper-digest"
+language = "zh-CN"
+output_dir = "outputs"
+
+[preferences]
+interests = [
+  "graph machine learning, graph neural networks, and graph foundation models",
+  "large language model agents and tool use",
+  "retrieval augmented generation"
+]
+include_keywords = ["graph neural network", "agent", "retrieval"]
+exclude_keywords = ["medical imaging"]
+categories = ["cs.LG", "cs.AI", "cs.CL"]
+
+[discovery]
+source = "arxiv"                    # arxiv | crossref | openreview | json
+date = "today"                      # today | yesterday | YYYY-MM-DD
+max_candidates = 200
+page_size = 100
+request_delay_seconds = 3.1
+json_path = ""
+
+[discovery.openreview]
+venue_id = "ICLR.cc/2026/Conference"
+status = "accepted"                 # accepted | all
+submission_invitation = ""          # optional explicit invitation for status=all
+base_url = "https://api2.openreview.net"
+
+[discovery.crossref]
+conference = "Advances in Neural Information Processing Systems"
+from_date = "2025-01-01"
+until_date = "2025-12-31"
+mailto = ""                         # optional; enables Crossref's polite pool
+min_venue_similarity = 0.15
+base_url = "https://api.crossref.org"
+
+[selection]
+ranker = "rules"                    # rules | llm
+min_score = 0.12
+max_papers = 5
+llm_batch_size = 20
+
+[backend]
+type = "openai_compatible"           # openai_compatible | codex
+base_url = "https://api.deepseek.com/v1"
+model = "deepseek-chat"
+api_key_env = "PAPER_DIGEST_API_KEY"
+max_output_tokens = 5500
+temperature = 0.2
+timeout_seconds = 300
+codex_model = ""                       # optional; blank uses the Codex default
+
+[fulltext]
+download_pdf = true
+max_main_text_chars = 180000
+
+[budget]
+max_total_tokens = 80000
+max_estimated_usd = 5.0
+input_usd_per_million = 0.30
+output_usd_per_million = 1.20
+
+[output]
+formats = ["json", "markdown", "latex"]
+compile_pdf = true
