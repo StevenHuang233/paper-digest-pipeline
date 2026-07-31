@@ -54,6 +54,6 @@ Store these values as repository Actions Secrets, never TOML values:
 - `PAPER_DIGEST_EMAIL_TO`: one or more comma-separated recipient addresses.
 - `PAPER_DIGEST_EMAIL_FROM`: optional envelope/header sender; fall back to the SMTP username.
 
-Configure only the environment-variable names in the `backend` and `email` sections. Use `smtp.qq.com:465` with `ssl` for QQ Mail, `smtp.gmail.com:465` with `ssl` for Gmail, or the provider's documented host, port, and TLS mode. Never print the password while diagnosing authentication failures.
+Configure only the environment-variable names in the `backend` and `email` sections. Set `email.provider` to `qq`, `gmail`, or `netease` and leave host empty, port zero, and security `auto` to use the built-in SSL/465 preset. For NetEase, derive the host from sender domains `163.com`, `126.com`, `yeah.net`, `vip.163.com`, or `vip.126.com`. Use `auto` to infer these supported providers from the sender address. Use `custom` only with an explicit host, port, and `ssl` or `starttls`. Require an SMTP authorization code for QQ/NetEase or an App Password for Gmail. Never print the password while diagnosing authentication failures.
 
 Invoke `paper-digest email --config config.toml --result run-result.json --status success` to send a result. Attach the generated PDF and Markdown only when present and under `email.max_attachment_mb`; attach the run log for partial or failed runs. Include counts, limit warnings, and the Actions run URL in the message body.

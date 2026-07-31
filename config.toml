@@ -109,9 +109,12 @@ compile_pdf = true                     # Actions 会安装 XeLaTeX 并生成 dig
 
 [email]
 enabled = true                         # false 可暂时关闭邮件，但仍正常生成和上传产物
-smtp_host = "smtp.qq.com"              # QQ 邮箱；Gmail 改为 smtp.gmail.com
-smtp_port = 465
-security = "ssl"                       # ssl | starttls；QQ/Gmail 的 465 端口通常使用 ssl
+provider = "qq"                        # qq | gmail | netease | auto | custom
+# 使用 qq/gmail/netease 时，下面三项保持默认即可；程序会自动选择 SMTP 参数。
+# provider=netease 时会根据发件地址识别 163.com、126.com、yeah.net 和 VIP 邮箱。
+smtp_host = ""                         # custom 时必填；预设模式留空，也可用于覆盖预设
+smtp_port = 0                           # 0 表示使用服务商预设端口
+security = "auto"                      # auto | ssl | starttls；auto 表示使用服务商预设
 subject_prefix = "[Paper Digest]"
 username_env = "PAPER_DIGEST_SMTP_USERNAME" # 发件邮箱地址对应的 GitHub Secret 名称
 password_env = "PAPER_DIGEST_SMTP_PASSWORD" # 邮箱 SMTP 授权码，不是网页登录密码

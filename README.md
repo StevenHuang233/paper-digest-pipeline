@@ -55,7 +55,7 @@ paper-digest run --config config.toml --dry-run
 - `preferences.categories`：arXiv 服务端检索类别；过窄会在 LLM 筛选前漏掉论文。
 - `discovery.date = "yesterday"`：每日任务推荐值。
 - `review.max_papers`：每次真正读取 PDF 并生成六段式总结的数量。
-- `email.smtp_host`、`email.smtp_port`、`email.security`：按邮箱服务商修改。
+- `email.provider`：选择 `qq`、`gmail` 或 `netease`，SMTP 地址、端口和加密方式会自动配置。
 
 #### 参数配置速查
 
@@ -84,6 +84,8 @@ paper-digest run --config config.toml --dry-run
 | `budget.max_estimated_usd` | 单次任务美元预算硬上限 | 应与真实单价一起维护，避免意外消费 |
 | `output.compile_pdf` | 是否生成 PDF | Actions 已安装 XeLaTeX，建议保持 `true` |
 | `email.enabled` | 是否发送邮件 | 启用每日邮件设为 `true` |
+| `email.provider` | 邮箱服务商预设 | `qq`、`gmail`、`netease`；`auto` 可按发件地址识别，`custom` 用于其他邮箱 |
+| `email.smtp_host/port/security` | SMTP 手动覆盖 | 三种内置服务商保持空值、`0`、`auto`；只有自定义邮箱才需要填写 |
 | `email.max_attachment_mb` | 单个附件大小上限 | 常见邮箱用 20 MB 较稳妥；超限文件仍可从 Artifact 下载 |
 
 `decision_policy` 的写法尤其重要。推荐按“收录条件 A/B + 排除条件 + 证据不足如何处理”的结构写，例如：论文的主要贡献必须直接研究多模态学习或 OPD；只是在应用背景中顺带提及多模态的论文排除；仅凭标题和摘要无法确认时排除。模型会把同一规则应用到每个批次，不会为单批次设置配额。
@@ -102,15 +104,53 @@ paper-digest run --config config.toml --dry-run
 
 不要把上述值写进 `config.toml`、`.env`、工作流或提交历史。
 
-常见 SMTP 配置：
+### 3. 选择邮件服务商
+
+三种邮箱使用相同的 GitHub Secret 名称，只需要修改 `config.toml` 中的一行。`smtp_host = ""`、`smtp_port = 0` 和 `security = "auto"` 保持不变。
+
+QQ 邮箱：
+
+```toml
+[email]
+enabled = true
+provider = "qq"
+```
+
+`PAPER_DIGEST_SMTP_USERNAME` 填完整 QQ 邮箱地址，例如 `example@qq.com`；密码 Secret 填 QQ 邮箱设置中生成的 SMTP 授权码。
+
+Google Gmail：
+
+```toml
+[email]
+enabled = true
+provider = "gmail"
+```
+
+`PAPER_DIGEST_SMTP_USERNAME` 填完整 Gmail 地址。Google 账号需要先开启两步验证，再创建 App Password，并把该 App Password 放入 `PAPER_DIGEST_SMTP_PASSWORD`。不要使用 Google 登录密码。
+
+网易邮箱：
+
+```toml
+[email]
+enabled = true
+provider = "netease"
+```
+
+程序会根据 `PAPER_DIGEST_SMTP_USERNAME` 的后缀自动支持 `@163.com`、`@126.com`、`@yeah.net`、`@vip.163.com` 和 `@vip.126.com`。密码 Secret 填网易邮箱设置中生成的客户端授权码。
+
+内置预设如下：
 
 | 邮箱 | Host | Port | Security | 说明 |
 |---|---:|---:|---|---|
 | QQ 邮箱 | `smtp.qq.com` | `465` | `ssl` | 在邮箱设置中开启 SMTP 并生成授权码 |
 | Gmail | `smtp.gmail.com` | `465` | `ssl` | 开启两步验证后创建 App Password |
-| 163 邮箱 | `smtp.163.com` | `465` | `ssl` | 开启 SMTP 并使用客户端授权码 |
+| 网易 163 | `smtp.163.com` | `465` | `ssl` | 开启 SMTP 并使用客户端授权码 |
+| 网易 126 | `smtp.126.com` | `465` | `ssl` | 根据发件地址自动识别 |
+| 网易 yeah.net | `smtp.yeah.net` | `465` | `ssl` | 根据发件地址自动识别 |
 
-### 3. 启用和测试
+其他企业邮箱可设 `provider = "custom"`，并明确填写 `smtp_host`、`smtp_port` 和 `security = "ssl"` 或 `"starttls"`。
+
+### 4. 启用和测试
 
 打开仓库的 `Actions` 页面，选择 `Daily paper digest`，点击 `Run workflow`。第一次建议手动指定一个日期并把总结数量临时设为 1，确认模型调用、PDF 生成和邮件发送全部正常。验证通过后无需其他操作，计划任务会每天运行。
 
@@ -124,7 +164,7 @@ paper-digest run --config config.toml --dry-run
 
 对于公开仓库，GitHub 可能在仓库连续 60 天无活动后自动禁用 scheduled workflow；届时在 Actions 页面重新启用即可。
 
-### 4. 正式启动每日邮件服务
+### 5. 正式启动每日邮件服务
 
 完成一次手动试跑后，按下面清单确认即可正式启用：
 

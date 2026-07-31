@@ -10,6 +10,20 @@ from pathlib import Path
 from typing import Any
 
 
+SMTP_PRESETS: dict[str, tuple[str, int, str]] = {
+    "qq": ("smtp.qq.com", 465, "ssl"),
+    "gmail": ("smtp.gmail.com", 465, "ssl"),
+}
+
+NETEASE_HOSTS = {
+    "163.com": "smtp.163.com",
+    "126.com": "smtp.126.com",
+    "yeah.net": "smtp.yeah.net",
+    "vip.163.com": "smtp.vip.163.com",
+    "vip.126.com": "smtp.vip.126.com",
+}
+
+
 def read_result(path: str | Path | None) -> dict[str, Any]:
     if not path:
         return {}
@@ -35,6 +49,57 @@ def _recipients(raw: str) -> list[str]:
     if not values:
         raise RuntimeError("No email recipients were configured")
     return values
+
+
+def _mail_domain(username: str) -> str:
+    return username.rsplit("@", 1)[-1].strip().lower() if "@" in username else ""
+
+
+def resolve_smtp_settings(settings: dict[str, Any], username: str) -> tuple[str, int, str, str]:
+    """Resolve provider presets while allowing individual SMTP overrides."""
+    provider = str(settings.get("provider") or "auto").strip().lower()
+    host_override = str(settings.get("smtp_host") or "").strip()
+    port_override = int(settings.get("smtp_port") or 0)
+    security_override = str(settings.get("security") or "auto").strip().lower()
+
+    if provider == "auto":
+        domain = _mail_domain(username)
+        if domain in {"qq.com", "foxmail.com"}:
+            provider = "qq"
+        elif domain in {"gmail.com", "googlemail.com"}:
+            provider = "gmail"
+        elif domain in NETEASE_HOSTS:
+            provider = "netease"
+        elif host_override and port_override and security_override in {"ssl", "starttls"}:
+            provider = "custom"
+        else:
+            raise RuntimeError(
+                "Cannot detect the email provider from the SMTP username; "
+                "set email.provider to qq, gmail, netease, or custom"
+            )
+
+    if provider in SMTP_PRESETS:
+        preset_host, preset_port, preset_security = SMTP_PRESETS[provider]
+    elif provider == "netease":
+        domain = _mail_domain(username)
+        preset_host = NETEASE_HOSTS.get(domain, "")
+        if not preset_host:
+            raise RuntimeError(
+                "NetEase preset supports @163.com, @126.com, @yeah.net, "
+                "@vip.163.com, and @vip.126.com sender addresses"
+            )
+        preset_port, preset_security = 465, "ssl"
+    elif provider == "custom":
+        preset_host, preset_port, preset_security = "", 0, ""
+    else:
+        raise RuntimeError(f"Unsupported email provider: {provider}")
+
+    host = host_override or preset_host
+    port = port_override or preset_port
+    security = security_override if security_override != "auto" else preset_security
+    if not host or not 1 <= port <= 65535 or security not in {"ssl", "starttls"}:
+        raise RuntimeError("Incomplete SMTP settings after resolving the email provider preset")
+    return host, port, security, provider
 
 
 def _summary_body(result: dict[str, Any], status: str, run_url: str) -> str:
@@ -112,11 +177,10 @@ def send_digest_email(
     message, username, password, recipients = build_message(
         config, result, status=status, run_url=run_url, log_path=log_path,
     )
-    host = str(settings["smtp_host"])
-    port = int(settings["smtp_port"])
+    host, port, security, provider = resolve_smtp_settings(settings, username)
     timeout = int(settings["timeout_seconds"])
     context = ssl.create_default_context()
-    if settings["security"] == "ssl":
+    if security == "ssl":
         with smtplib.SMTP_SSL(host, port, timeout=timeout, context=context) as client:
             client.login(username, password)
             client.send_message(message)
@@ -127,4 +191,7 @@ def send_digest_email(
             client.ehlo()
             client.login(username, password)
             client.send_message(message)
-    return {"sent": True, "recipient_count": len(recipients), "subject": str(message["Subject"])}
+    return {
+        "sent": True, "smtp_provider": provider,
+        "recipient_count": len(recipients), "subject": str(message["Subject"]),
+    }

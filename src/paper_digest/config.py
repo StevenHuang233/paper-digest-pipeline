@@ -42,7 +42,7 @@ DEFAULTS: dict[str, Any] = {
     },
     "output": {"formats": ["json", "markdown", "latex"], "compile_pdf": True},
     "email": {
-        "enabled": False, "smtp_host": "", "smtp_port": 465, "security": "ssl",
+        "enabled": False, "provider": "auto", "smtp_host": "", "smtp_port": 0, "security": "auto",
         "subject_prefix": "[Paper Digest]", "username_env": "PAPER_DIGEST_SMTP_USERNAME",
         "password_env": "PAPER_DIGEST_SMTP_PASSWORD", "to_env": "PAPER_DIGEST_EMAIL_TO",
         "from_env": "PAPER_DIGEST_EMAIL_FROM", "attach_pdf": True, "attach_markdown": True,
@@ -88,12 +88,18 @@ def load_config(path: str | Path) -> tuple[dict[str, Any], Path]:
 def validate_email_config(config: dict[str, Any]) -> None:
     email = config["email"]
     if bool(email["enabled"]):
-        if not str(email["smtp_host"]).strip():
-            raise ValueError("email.smtp_host is required when email.enabled is true")
-        if not 1 <= int(email["smtp_port"]) <= 65535:
-            raise ValueError("email.smtp_port must be between 1 and 65535")
-        if email["security"] not in {"ssl", "starttls"}:
-            raise ValueError("email.security must be ssl or starttls")
+        provider = str(email["provider"]).strip().lower()
+        if provider not in {"auto", "qq", "gmail", "netease", "custom"}:
+            raise ValueError("email.provider must be auto, qq, gmail, netease, or custom")
+        host = str(email["smtp_host"]).strip()
+        port = int(email["smtp_port"])
+        security = str(email["security"]).strip().lower()
+        if port != 0 and not 1 <= port <= 65535:
+            raise ValueError("email.smtp_port must be 0 (preset) or between 1 and 65535")
+        if security not in {"auto", "ssl", "starttls"}:
+            raise ValueError("email.security must be auto, ssl, or starttls")
+        if provider == "custom" and (not host or port == 0 or security == "auto"):
+            raise ValueError("custom email provider requires smtp_host, smtp_port, and explicit security")
         for field in ("username_env", "password_env", "to_env"):
             if not str(email[field]).strip():
                 raise ValueError(f"email.{field} is required when email.enabled is true")

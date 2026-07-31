@@ -10,7 +10,7 @@ from unittest.mock import patch
 from paper_digest.backends import OpenAICompatibleBackend
 from paper_digest.budget import Budget
 from paper_digest.config import load_config
-from paper_digest.emailer import build_message, read_result, send_digest_email
+from paper_digest.emailer import build_message, read_result, resolve_smtp_settings, send_digest_email
 from paper_digest.filtering import llm_rerank, rule_rank
 from paper_digest.fulltext import CUTOFF
 from paper_digest.models import Paper
@@ -239,6 +239,40 @@ class EmailTests(unittest.TestCase):
             path.write_text("not-json", encoding="utf-8")
             self.assertEqual(read_result(path), {})
             self.assertEqual(read_result(Path(temp) / "missing.json"), {})
+
+    def test_qq_gmail_and_netease_provider_presets(self):
+        base = {"smtp_host": "", "smtp_port": 0, "security": "auto"}
+        cases = [
+            ("qq", "sender@qq.com", ("smtp.qq.com", 465, "ssl", "qq")),
+            ("gmail", "sender@gmail.com", ("smtp.gmail.com", 465, "ssl", "gmail")),
+            ("netease", "sender@163.com", ("smtp.163.com", 465, "ssl", "netease")),
+            ("netease", "sender@126.com", ("smtp.126.com", 465, "ssl", "netease")),
+            ("netease", "sender@yeah.net", ("smtp.yeah.net", 465, "ssl", "netease")),
+        ]
+        for provider, username, expected in cases:
+            with self.subTest(provider=provider, username=username):
+                settings = base | {"provider": provider}
+                self.assertEqual(resolve_smtp_settings(settings, username), expected)
+
+    def test_auto_provider_detection_and_custom_override(self):
+        auto = {"provider": "auto", "smtp_host": "", "smtp_port": 0, "security": "auto"}
+        self.assertEqual(
+            resolve_smtp_settings(auto, "sender@googlemail.com"),
+            ("smtp.gmail.com", 465, "ssl", "gmail"),
+        )
+        custom = {
+            "provider": "custom", "smtp_host": "mail.example.com",
+            "smtp_port": 587, "security": "starttls",
+        }
+        self.assertEqual(
+            resolve_smtp_settings(custom, "sender@example.com"),
+            ("mail.example.com", 587, "starttls", "custom"),
+        )
+
+    def test_netease_preset_rejects_unknown_sender_domain(self):
+        settings = {"provider": "netease", "smtp_host": "", "smtp_port": 0, "security": "auto"}
+        with self.assertRaisesRegex(RuntimeError, "NetEase preset supports"):
+            resolve_smtp_settings(settings, "sender@example.com")
 
 
 class FullTextTests(unittest.TestCase):
