@@ -38,24 +38,55 @@ def render_markdown(records: list[dict]) -> str:
 def _latex_plain(text: str) -> str:
     replacements = {
         "\\": r"\textbackslash{}", "&": r"\&", "%": r"\%", "$": r"\$", "#": r"\#",
-        "_": r"\_", "{": r"\{", "}": r"\}", "~": r"\textasciitilde{}", "^": r"\textasciicircum{}",
+        "_": r"\_\allowbreak{}", "{": r"\{", "}": r"\}", "~": r"\textasciitilde{}", "^": r"\textasciicircum{}",
+        "α": r"\ensuremath{\alpha}", "β": r"\ensuremath{\beta}", "γ": r"\ensuremath{\gamma}",
+        "η": r"\ensuremath{\eta}", "θ": r"\ensuremath{\theta}", "λ": r"\ensuremath{\lambda}",
+        "π": r"\ensuremath{\pi}", "ρ": r"\ensuremath{\rho}", "τ": r"\ensuremath{\tau}",
+        "φ": r"\ensuremath{\phi}", "ψ": r"\ensuremath{\psi}", "ω": r"\ensuremath{\omega}",
+        "ζ": r"\ensuremath{\zeta}", "≥": r"\ensuremath{\geq}", "≤": r"\ensuremath{\leq}",
+        "∝": r"\ensuremath{\propto}", "⟨": r"\ensuremath{\langle}", "⟩": r"\ensuremath{\rangle}",
+        "−": "-",
+    }
+    return "".join(replacements.get(char, char) for char in text)
+
+
+def _latex_math(text: str) -> str:
+    replacements = {
+        "α": r"\alpha", "β": r"\beta", "γ": r"\gamma", "η": r"\eta", "θ": r"\theta",
+        "λ": r"\lambda", "π": r"\pi", "ρ": r"\rho", "τ": r"\tau", "φ": r"\phi",
+        "ψ": r"\psi", "ω": r"\omega", "ζ": r"\zeta", "≥": r"\geq", "≤": r"\leq",
+        "∝": r"\propto", "⟨": r"\langle", "⟩": r"\rangle", "−": "-",
     }
     return "".join(replacements.get(char, char) for char in text)
 
 
 def latex_escape(text: str) -> str:
-    # Preserve explicit inline/display math emitted as $...$, \(...\), or \[...\].
+    # Preserve genuine math spans, but treat currency pairs containing prose as
+    # literal dollars rather than opening and closing math mode.
     parts = re.split(r"(\$[^$]+\$|\\\(.+?\\\)|\\\[.+?\\\])", text, flags=re.S)
-    return "".join(part if (part.startswith("$") or part.startswith(r"\(") or part.startswith(r"\[")) else _latex_plain(part) for part in parts)
+    rendered: list[str] = []
+    for part in parts:
+        if part.startswith("$") and part.endswith("$"):
+            inner = part[1:-1]
+            if re.search(r"[\u3400-\u9fff]", inner):
+                rendered.append(_latex_plain(part))
+            else:
+                rendered.append(f"${_latex_math(inner)}$")
+        elif part.startswith(r"\(") or part.startswith(r"\["):
+            rendered.append(_latex_math(part))
+        else:
+            rendered.append(_latex_plain(part))
+    return "".join(rendered)
 
 
 def render_latex(records: list[dict]) -> str:
     body: list[str] = []
-    for index, record in enumerate(records, 1):
+    for record in records:
         paper, review = record["paper"], record["review"]
         title = latex_escape(paper["title"])
+        title = title.replace(r"$\beta$", r"\texorpdfstring{$\beta$}{beta}")
         url = paper.get("url") or paper.get("pdf_url") or ""
-        body.append(f"\\section{{{index}. {title}}}")
+        body.append(f"\\section{{{title}}}")
         if url:
             body.append(f"\\noindent\\url{{{url}}}\\par")
         meta = " · ".join(filter(None, [", ".join(paper.get("authors") or []), paper.get("published", ""), paper.get("venue", "")]))
@@ -70,14 +101,19 @@ def render_latex(records: list[dict]) -> str:
             body.append(latex_escape(review["limitations"].strip()))
     return r"""\documentclass[11pt,a4paper]{ctexart}
 \usepackage[margin=2.25cm]{geometry}
-\usepackage{amsmath,amssymb,booktabs,longtable,microtype}
+\usepackage{amsmath,amssymb,booktabs,longtable,microtype,xurl}
 \usepackage[colorlinks=true,linkcolor=blue,urlcolor=blue]{hyperref}
+\sloppy
+\setlength{\emergencystretch}{3em}
+\Urlmuskip=0mu plus 1mu
 \setlength{\parindent}{2em}
 \setlength{\parskip}{0.45em}
 \begin{document}
 \title{Paper Digest}
+\author{}
 \date{\today}
 \maketitle
+\pagestyle{plain}
 \tableofcontents
 \newpage
 """ + "\n\n".join(body) + "\n\\end{document}\n"

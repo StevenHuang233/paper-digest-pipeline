@@ -13,8 +13,9 @@ from paper_digest.config import load_config
 from paper_digest.filtering import llm_rerank, rule_rank
 from paper_digest.fulltext import CUTOFF
 from paper_digest.models import Paper
-from paper_digest.outputs import render_markdown
+from paper_digest.outputs import latex_escape, render_latex, render_markdown
 from paper_digest.orchestrator import rank_and_select, run_pipeline
+from paper_digest.review_prompt import build_review_prompt
 from paper_digest.sources.arxiv import build_query, parse_feed, resolve_date
 from paper_digest.sources.crossref import parse_items, venue_similarity
 from paper_digest.sources.openreview import parse_notes
@@ -205,6 +206,28 @@ class CrossrefTests(unittest.TestCase):
 
 
 class OutputTests(unittest.TestCase):
+    def test_latex_escape_distinguishes_currency_from_math(self):
+        rendered = latex_escape("cost $100/千条轨迹, then $1.36; model $β$ uses λ")
+        self.assertIn(r"\$100/千条轨迹", rendered)
+        self.assertIn(r"\$1.36", rendered)
+        self.assertIn(r"$\beta$", rendered)
+        self.assertIn(r"\ensuremath{\lambda}", rendered)
+
+    def test_latex_sections_do_not_duplicate_automatic_numbers(self):
+        record = {
+            "paper": {"title": "Paper", "url": "https://arxiv.org/abs/1", "authors": []},
+            "review": {key: "Text" for key in ["background", "motivation", "idea", "method", "experiments", "conclusion"]}
+            | {"evidence_level": "fulltext", "limitations": ""},
+        }
+        rendered = render_latex([record])
+        self.assertIn(r"\section{Paper}", rendered)
+        self.assertNotIn(r"\section{1. Paper}", rendered)
+
+    def test_chinese_review_prompt_requires_simplified_chinese_fields(self):
+        prompt = build_review_prompt(Paper(id="x", title="Paper"), "Evidence", "fulltext", "zh-CN")
+        self.assertIn("所有叙述字段必须使用简体中文", prompt)
+        self.assertIn("Do not return an English narrative paragraph", prompt)
+
     def test_markdown_has_clickable_link_and_sections(self):
         record = {
             "paper": {"title": "Paper", "url": "https://arxiv.org/abs/1", "authors": [], "published": "", "venue": ""},

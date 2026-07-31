@@ -14,7 +14,16 @@ def build_review_prompt(paper: Paper, text: str, evidence_level: str, language: 
         "venue": paper.venue, "categories": paper.categories, "source_url": paper.url,
         "pdf_url": paper.pdf_url, "evidence_level": evidence_level, "evidence_note": evidence_note,
     }
+    language_rule = (
+        "Write background, motivation, idea, method, experiments, conclusion, and limitations entirely in fluent "
+        "Simplified Chinese. Keep only proper names, model/benchmark/metric names, symbols, and equations in English. "
+        "Do not return an English narrative paragraph. 所有叙述字段必须使用简体中文，禁止整段英文输出。"
+        if language.lower() in {"zh", "zh-cn", "zh-hans"}
+        else f"Write every narrative field in {language}."
+    )
     return f"""Write a six-part review in {language}. Keep the original English paper title outside the section text.
+
+Mandatory language rule: {language_rule}
 
 The six fields have fixed semantics:
 1. background: explain the task, setting, and why the broad problem matters; do not introduce this paper's solution.
@@ -38,4 +47,3 @@ Paper evidence:
 --- BEGIN EVIDENCE ---
 {text}
 --- END EVIDENCE ---"""
-
