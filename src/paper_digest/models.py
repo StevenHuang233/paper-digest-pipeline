@@ -18,6 +18,8 @@ class Paper:
     source: str = ""
     score: float = 0.0
     score_reasons: list[str] = field(default_factory=list)
+    selection_decision: str = ""
+    selection_scores: dict[str, int] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -29,6 +31,7 @@ class Paper:
         clean["authors"] = list(clean.get("authors") or [])
         clean["categories"] = list(clean.get("categories") or [])
         clean["score_reasons"] = list(clean.get("score_reasons") or [])
+        clean["selection_scores"] = dict(clean.get("selection_scores") or {})
         return cls(**clean)
 
 
@@ -45,4 +48,3 @@ class SixPartReview:
 
     def to_dict(self) -> dict[str, str]:
         return asdict(self)
-

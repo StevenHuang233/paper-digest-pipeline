@@ -13,11 +13,22 @@ JSON may be a top-level list or `{ "papers": [...] }`. Fields are `id`, `title`,
 
 ## Selection
 
-`rules` uses title, abstract, category, positive terms, and hard negative terms. `llm` first runs the same rule pass, then sends only compact metadata and abstracts to the selected backend. `min_score` is applied before `max_papers`.
+`rules` uses title, abstract, category, positive terms, and hard negative terms. `llm` applies hard negatives first, then sends compact metadata and truncated abstracts to the selected backend. The fixed rubric totals 100 points: topic 40, problem/task 20, method 30, and confidence 10. `min_score = 0.60` retains papers scoring at least 60. `max_selected_papers` controls `selected.json`; `review.max_papers` independently controls expensive full-text reviews.
+
+For a 2,000-paper scan, use batches around 40, abstract excerpts around 1,600 characters, and a maximum retained shortlist of 500. A dry run intentionally uses rules and `rules_preview_min_score`; its scores are not comparable to the paid 100-point LLM rubric.
+
+Treat the preference fields differently:
+
+- Put concise natural-language directions in `interests`, including the target domain, research problem, and preferred method when each matters. This is the primary semantic profile.
+- Put acronyms, aliases, task names, model families, and distinctive method terms in `include_keywords`. They are soft positive evidence, not requirements.
+- Put only unambiguous unwanted phrases in `exclude_keywords`. Matching is case-insensitive substring matching and is a non-reversible hard exclusion before the LLM call.
+- Use `categories` carefully. arXiv applies them during remote discovery, so overly narrow categories permanently reduce recall before ranking. Other sources pass available category metadata to the LLM but may not use it for retrieval.
+
+The candidate cap applies after the configured source query. If `candidate_limit_reached` is true, results beyond the cap were not considered; split dates, categories, tracks, or venues when exhaustive coverage is required. The LLM must return every synthetic paper ID in every batch. Missing IDs cause the run to fail rather than silently shrinking the shortlist.
 
 ## Backends
 
-`openai_compatible` calls `<base_url>/chat/completions`, reads the key only from `api_key_env`, and works with providers that implement the common chat-completions response shape. Configure the provider's exact model and per-million-token prices.
+`openai_compatible` calls `<base_url>/chat/completions`, reads the key only from `api_key_env`, and works with providers that implement the common chat-completions response shape. Configure the provider's exact model and per-million-token prices. For DeepSeek V4 Flash, use `https://api.deepseek.com`, `deepseek-v4-flash`, JSON mode, and `supports_thinking_toggle = true`; disable thinking for filtering.
 
 `codex` runs `codex exec` non-interactively with an explicit read-only sandbox, ephemeral sessions, and a JSON output schema. It uses the local Codex login; `codex_model` may remain blank to use the local default.
 

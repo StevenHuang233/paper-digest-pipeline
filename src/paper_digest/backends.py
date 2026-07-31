@@ -51,7 +51,10 @@ class OpenAICompatibleBackend:
         if not self.api_key:
             raise RuntimeError(f"Missing API key environment variable: {key_name}")
 
-    def generate_json(self, system: str, prompt: str, *, max_output_tokens: int | None = None, schema: dict[str, Any] | None = None) -> tuple[dict[str, Any], dict[str, int]]:
+    def generate_json(
+        self, system: str, prompt: str, *, max_output_tokens: int | None = None,
+        schema: dict[str, Any] | None = None, thinking_mode: str | None = None,
+    ) -> tuple[dict[str, Any], dict[str, int]]:
         url = self.config["base_url"].rstrip("/")
         if not url.endswith("/chat/completions"):
             url += "/chat/completions"
@@ -61,6 +64,11 @@ class OpenAICompatibleBackend:
             "temperature": float(self.config["temperature"]),
             "max_tokens": int(max_output_tokens or self.config["max_output_tokens"]),
         }
+        if bool(self.config.get("json_mode", True)):
+            payload["response_format"] = {"type": "json_object"}
+        effective_thinking = thinking_mode if thinking_mode is not None else str(self.config.get("thinking_mode") or "")
+        if bool(self.config.get("supports_thinking_toggle", False)) and effective_thinking in {"enabled", "disabled"}:
+            payload["thinking"] = {"type": effective_thinking}
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         request = urllib.request.Request(url, data=data, method="POST", headers={
             "Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json", "Accept": "application/json",
@@ -71,7 +79,9 @@ class OpenAICompatibleBackend:
         except urllib.error.HTTPError as exc:
             detail = exc.read(2000).decode("utf-8", errors="replace")
             raise RuntimeError(f"Model API HTTP {exc.code}: {detail}") from exc
-        content = result["choices"][0]["message"]["content"]
+        content = result["choices"][0]["message"].get("content") or ""
+        if not content.strip():
+            raise RuntimeError("Model API returned empty JSON content")
         usage = result.get("usage") or {}
         return _extract_json(content), {
             "input_tokens": int(usage.get("prompt_tokens") or 0),
@@ -86,7 +96,10 @@ class CodexBackend:
         if not self.executable:
             raise RuntimeError("codex executable was not found on PATH")
 
-    def generate_json(self, system: str, prompt: str, *, max_output_tokens: int | None = None, schema: dict[str, Any] | None = None) -> tuple[dict[str, Any], dict[str, int]]:
+    def generate_json(
+        self, system: str, prompt: str, *, max_output_tokens: int | None = None,
+        schema: dict[str, Any] | None = None, thinking_mode: str | None = None,
+    ) -> tuple[dict[str, Any], dict[str, int]]:
         combined = f"{system}\n\n{prompt}\n\nReturn only the JSON object matching the supplied schema."
         with tempfile.TemporaryDirectory(prefix="paper-digest-codex-") as temp:
             temp_dir = Path(temp)

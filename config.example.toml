@@ -16,8 +16,8 @@ categories = ["cs.LG", "cs.AI", "cs.CL"]
 [discovery]
 source = "arxiv"                    # arxiv | crossref | openreview | json
 date = "today"                      # today | yesterday | YYYY-MM-DD
-max_candidates = 200
-page_size = 100
+max_candidates = 2000
+page_size = 200
 request_delay_seconds = 3.1
 json_path = ""
 
@@ -36,30 +36,41 @@ min_venue_similarity = 0.15
 base_url = "https://api.crossref.org"
 
 [selection]
-ranker = "rules"                    # rules | llm
-min_score = 0.12
-max_papers = 5
-llm_batch_size = 20
+ranker = "llm"                      # rules | llm
+min_score = 0.60                    # fixed LLM rubric: retain scores >= 60/100
+max_selected_papers = 500           # shortlist cap; does not force 500 summaries
+rules_preview_min_score = 0.0       # dry-run uses rule scores on a different scale
+llm_batch_size = 40
+llm_abstract_chars = 1600
+llm_max_output_tokens = 4000
+llm_thinking_mode = "disabled"      # V4 Flash defaults to thinking; filtering disables it
+
+[review]
+max_papers = 5                      # deep summaries per run; raise separately when desired
 
 [backend]
 type = "openai_compatible"           # openai_compatible | codex
-base_url = "https://api.deepseek.com/v1"
-model = "deepseek-chat"
+base_url = "https://api.deepseek.com"
+model = "deepseek-v4-flash"
 api_key_env = "PAPER_DIGEST_API_KEY"
 max_output_tokens = 5500
 temperature = 0.2
 timeout_seconds = 300
 codex_model = ""                       # optional; blank uses the Codex default
+json_mode = true
+thinking_mode = "disabled"
+supports_thinking_toggle = true       # DeepSeek-specific OpenAI-format extension
 
 [fulltext]
 download_pdf = true
 max_main_text_chars = 180000
 
 [budget]
-max_total_tokens = 80000
-max_estimated_usd = 5.0
-input_usd_per_million = 0.30
-output_usd_per_million = 1.20
+max_total_tokens = 3000000
+max_estimated_usd = 2.0
+# Conservative 2x estimates for the announced future peak-hour policy.
+input_usd_per_million = 0.28
+output_usd_per_million = 0.56
 
 [output]
 formats = ["json", "markdown", "latex"]

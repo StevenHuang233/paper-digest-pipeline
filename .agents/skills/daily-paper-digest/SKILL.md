@@ -37,7 +37,10 @@ python .agents/skills/daily-paper-digest/scripts/run_digest.py run --config conf
 
 ## Cost and evidence rules
 
-- Keep deterministic ranking as the default. Enable `selection.ranker = "llm"` only when semantic ranking justifies the extra calls.
+- Use deterministic ranking for zero-cost previews. Use `selection.ranker = "llm"` when semantic relevance is the primary selection signal and the configured budget covers the candidate set.
+- For large LLM scans, keep `discovery.max_candidates`, `selection.max_selected_papers`, and `review.max_papers` distinct. Retaining 500 papers must not silently trigger 500 deep reviews.
+- Apply hard negative-keyword exclusions before LLM ranking. Score every remaining paper with the fixed topic/problem/method/confidence rubric and reject incomplete batch responses instead of silently dropping papers.
+- When using DeepSeek V4 Flash for filtering, use model `deepseek-v4-flash`, enable JSON Output, and disable thinking for the selection calls.
 - Apply the configured token and estimated-dollar limits as hard gates. Never raise them silently.
 - Download and read full main text only for selected papers. Stop before appendices/references by default.
 - Preserve the fixed narrative sections: Background, Motivation, Core Idea, implementation-level Method, Experiments and what they demonstrate, and Conclusion.

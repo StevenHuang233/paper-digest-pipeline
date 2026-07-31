@@ -27,6 +27,27 @@ paper-digest run --config config.toml --backend codex --max-papers 3
 
 The state and all artifacts are written below `project.output_dir`. Re-running the same date/source job reuses completed summaries unless `--force` is supplied.
 
+## LLM selection at scale
+
+The example configuration discovers at most 2,000 papers and retains at most 500 in `selected.json`. Deep review is a separate limit (`review.max_papers`, default 5), so retaining a large conference shortlist does not accidentally generate 500 full reviews.
+
+With `selection.ranker = "llm"`, every non-excluded paper is scored with one fixed 100-point rubric: topic alignment 0–40, problem/task alignment 0–20, method alignment 0–30, and evidence confidence 0–10. The default threshold is 60. Papers are evaluated in batches of 40 using title, categories, and at most 1,600 abstract characters. Exact negative-keyword matches are removed before the model call.
+
+The information flow is: source query → at most 2,000 normalized candidates → exact hard exclusions → 40-paper LLM batches → one score for every candidate → threshold and global sort → at most 500 retained papers → at most `review.max_papers` full-text reviews. An incomplete LLM batch response fails visibly instead of silently losing papers.
+
+Configure the research profile by meaning, not by building one giant keyword list:
+
+- `interests`: write a few precise research directions that name the domain, problem, and preferred methods. These are the main semantic instructions to the LLM.
+- `include_keywords`: add aliases, model families, task names, or technical terms that should increase relevance. These are positive hints, not mandatory matches.
+- `exclude_keywords`: use only high-precision unwanted phrases. A case-insensitive substring match is a hard exclusion and the LLM cannot restore that paper.
+- `categories`: for arXiv, these restrict the server-side query before the 2,000-paper cap, so keep them broad enough to avoid recall loss. For imported or conference records, categories are metadata supplied to the ranker.
+
+The 2,000 cap is a hard safety ceiling, not a promise to retrieve every matching paper when a source contains more than 2,000 results. `candidates.json` and `manifest.json` record `candidate_limit_reached`; when it is true, narrow by date/category or split the job into multiple queries if exhaustive coverage matters.
+
+`--dry-run` remains free: it writes a rule-ranked preview using `rules_preview_min_score`. Rule-preview scores are not predictions of the later 100-point LLM score.
+
+The bundled DeepSeek profile uses the official OpenAI-format endpoint and `deepseek-v4-flash`. It enables JSON Output and disables thinking during selection for lower cost and more predictable structured output. Keep the API key only in `PAPER_DIGEST_API_KEY`; never place it in TOML or Git.
+
 ## Sources
 
 - `arxiv`: queries the official Atom API by submitted date and category.
@@ -40,7 +61,7 @@ JSON records accept: `id`, `title`, `abstract`, `authors`, `published`, `venue`,
 
 ## Cost controls
 
-Rules run before any model call. Optional LLM ranking sees only titles and abstracts, and only the selected Top-K papers proceed to full-text review. `budget.max_total_tokens` and `budget.max_estimated_usd` are hard preflight gates. Keys are read from the configured environment variable and are never stored in outputs.
+Rules and hard exclusions run before any model call. LLM ranking sees only compact metadata and abstracts, and only the selected shortlist can proceed to full-text review. Selection and completed summaries are checkpointed. `budget.max_total_tokens` and `budget.max_estimated_usd` are hard preflight gates. Keys are read from the configured environment variable and are never stored in outputs.
 
 ## Scheduling
 

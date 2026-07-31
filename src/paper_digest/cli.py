@@ -20,7 +20,8 @@ def _parser() -> argparse.ArgumentParser:
         cmd.add_argument("--config", default="config.toml")
         cmd.add_argument("--date")
         cmd.add_argument("--source", choices=["arxiv", "crossref", "openreview", "json"])
-        cmd.add_argument("--max-papers", type=int)
+        cmd.add_argument("--max-selected", type=int, help="Maximum papers retained after relevance filtering")
+        cmd.add_argument("--max-papers", type=int, help="Maximum retained papers to summarize deeply")
         cmd.add_argument("--backend", choices=["openai_compatible", "codex"])
         if name == "run":
             cmd.add_argument("--dry-run", action="store_true")
@@ -37,7 +38,9 @@ def _overrides(config: dict, args: argparse.Namespace) -> None:
     if getattr(args, "source", None):
         config["discovery"]["source"] = args.source
     if getattr(args, "max_papers", None):
-        config["selection"]["max_papers"] = args.max_papers
+        config["review"]["max_papers"] = args.max_papers
+    if getattr(args, "max_selected", None):
+        config["selection"]["max_selected_papers"] = args.max_selected
     if getattr(args, "backend", None):
         config["backend"]["type"] = args.backend
 
@@ -60,8 +63,12 @@ def main(argv: list[str] | None = None) -> None:
         papers = discover(config, config_path)
         run_dir = job_directory(config)
         path = run_dir / "candidates.json"
-        write_json(path, {"papers": [paper.to_dict() for paper in papers]})
-        result = {"candidate_count": len(papers), "path": str(path)}
+        limit = int(config["discovery"]["max_candidates"])
+        write_json(path, {
+            "count": len(papers), "limit": limit, "limit_reached": len(papers) >= limit,
+            "papers": [paper.to_dict() for paper in papers],
+        })
+        result = {"candidate_count": len(papers), "candidate_limit_reached": len(papers) >= limit, "path": str(path)}
     elif args.command == "summarize":
         result = run_pipeline(config, config_path, force=args.force, papers_path=Path(args.papers).resolve())
     else:

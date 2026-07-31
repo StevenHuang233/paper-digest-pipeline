@@ -49,16 +49,23 @@ def job_directory(config: dict) -> Path:
     return Path(config["project"]["output_dir"]) / f"{safe_name(source)}-{safe_name(str(discriminator))}"
 
 
-def rank_and_select(config: dict, papers: list[Paper], *, backend=None, allow_llm: bool = True, budget=None) -> list[Paper]:
+def rank_and_select(
+    config: dict, papers: list[Paper], *, backend=None, allow_llm: bool = True,
+    budget=None, min_score_override: float | None = None,
+) -> list[Paper]:
     ranked = rule_rank(papers, config["preferences"])
     if config["selection"]["ranker"] == "llm" and allow_llm:
         backend = backend or make_backend(config["backend"])
         ranked = llm_rerank(
             ranked, config["preferences"], backend,
-            batch_size=int(config["selection"]["llm_batch_size"]), budget=budget,
+            batch_size=int(config["selection"]["llm_batch_size"]),
+            abstract_chars=int(config["selection"]["llm_abstract_chars"]),
+            max_output_tokens=int(config["selection"]["llm_max_output_tokens"]),
+            thinking_mode=str(config["selection"]["llm_thinking_mode"]),
+            budget=budget,
         )
-    threshold = float(config["selection"]["min_score"])
-    return [paper for paper in ranked if paper.score >= threshold][: int(config["selection"]["max_papers"])]
+    threshold = float(config["selection"]["min_score"] if min_score_override is None else min_score_override)
+    return [paper for paper in ranked if paper.score >= threshold][: int(config["selection"]["max_selected_papers"])]
 
 
 def _validate_review(value: dict, evidence_level: str) -> SixPartReview:
@@ -90,7 +97,12 @@ def run_pipeline(config: dict, config_path: Path, *, dry_run: bool = False, forc
         candidates = [Paper.from_dict(item) for item in records]
     else:
         candidates = discover(config, config_path)
-    write_json(run_dir / "candidates.json", {"papers": [paper.to_dict() for paper in candidates]})
+    candidate_limit = int(config["discovery"]["max_candidates"])
+    write_json(run_dir / "candidates.json", {
+        "count": len(candidates), "limit": candidate_limit,
+        "limit_reached": len(candidates) >= candidate_limit,
+        "papers": [paper.to_dict() for paper in candidates],
+    })
 
     state_path = run_dir / "state.json"
     state = read_json(state_path, {"completed": {}, "failed": {}, "budget": {}})
@@ -108,23 +120,43 @@ def run_pipeline(config: dict, config_path: Path, *, dry_run: bool = False, forc
         if not dry_run and config["selection"]["ranker"] == "llm":
             backend = make_backend(config["backend"])
         try:
-            selected = rank_and_select(config, candidates, backend=backend, allow_llm=not dry_run, budget=budget)
+            preview_threshold = None
+            if dry_run and config["selection"]["ranker"] == "llm":
+                preview_threshold = float(config["selection"]["rules_preview_min_score"])
+            selected = rank_and_select(
+                config, candidates, backend=backend, allow_llm=not dry_run,
+                budget=budget, min_score_override=preview_threshold,
+            )
         except Exception:
             state["budget"] = {"reserved_tokens": budget.reserved_tokens, "reserved_usd": round(budget.reserved_usd, 6)}
             write_json(state_path, state)
             raise
-        write_json(selected_path, {"fingerprint": fingerprint, "ranker_used": effective_ranker, "papers": [paper.to_dict() for paper in selected]})
+        selected_limit = int(config["selection"]["max_selected_papers"])
+        write_json(selected_path, {
+            "fingerprint": fingerprint, "ranker_used": effective_ranker,
+            "count": len(selected), "limit": selected_limit,
+            "limit_reached": len(selected) >= selected_limit,
+            "papers": [paper.to_dict() for paper in selected],
+        })
     if dry_run:
-        manifest = {"status": "dry-run", "candidate_count": len(candidates), "selected_count": len(selected), "run_dir": str(run_dir)}
+        review_target_count = min(len(selected), int(config["review"]["max_papers"]))
+        manifest = {
+            "status": "dry-run", "candidate_count": len(candidates), "selected_count": len(selected),
+            "candidate_limit_reached": len(candidates) >= candidate_limit,
+            "selected_limit_reached": len(selected) >= int(config["selection"]["max_selected_papers"]),
+            "review_limit": int(config["review"]["max_papers"]),
+            "review_target_count": review_target_count, "run_dir": str(run_dir),
+        }
         write_json(run_dir / "manifest.json", manifest)
         return manifest
 
-    if selected and backend is None:
+    review_targets = selected[: int(config["review"]["max_papers"])]
+    if review_targets and backend is None:
         backend = make_backend(config["backend"])
     summaries_dir = run_dir / "summaries"
     summaries_dir.mkdir(exist_ok=True)
     records: list[dict] = []
-    for paper in selected:
+    for paper in review_targets:
         key = hashlib.sha256(f"{paper.source}\0{paper.id}\0{paper.title}".encode("utf-8")).hexdigest()[:16]
         summary_path = summaries_dir / f"{key}.json"
         if summary_path.exists() and not force:
@@ -160,8 +192,11 @@ def run_pipeline(config: dict, config_path: Path, *, dry_run: bool = False, forc
     write_json(state_path, state)
     outputs = write_outputs(run_dir, records, list(config["output"]["formats"]), bool(config["output"]["compile_pdf"]))
     manifest = {
-        "status": "complete" if len(records) == len(selected) else "partial",
-        "candidate_count": len(candidates), "selected_count": len(selected), "completed_count": len(records),
+        "status": "complete" if len(records) == len(review_targets) else "partial",
+        "candidate_count": len(candidates), "selected_count": len(selected),
+        "candidate_limit_reached": len(candidates) >= candidate_limit,
+        "selected_limit_reached": len(selected) >= int(config["selection"]["max_selected_papers"]),
+        "review_target_count": len(review_targets), "completed_count": len(records),
         "failed_count": len(state["failed"]), "budget": state["budget"], "outputs": outputs, "run_dir": str(run_dir),
     }
     write_json(run_dir / "manifest.json", manifest)

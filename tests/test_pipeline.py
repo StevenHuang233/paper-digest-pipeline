@@ -2,15 +2,18 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+import json
+import os
 from pathlib import Path
 from unittest.mock import patch
 
+from paper_digest.backends import OpenAICompatibleBackend
 from paper_digest.budget import Budget
 from paper_digest.config import load_config
-from paper_digest.filtering import rule_rank
+from paper_digest.filtering import llm_rerank, rule_rank
 from paper_digest.models import Paper
 from paper_digest.outputs import render_markdown
-from paper_digest.orchestrator import run_pipeline
+from paper_digest.orchestrator import rank_and_select, run_pipeline
 from paper_digest.sources.arxiv import build_query, parse_feed, resolve_date
 from paper_digest.sources.crossref import parse_items, venue_similarity
 from paper_digest.sources.openreview import parse_notes
@@ -51,6 +54,95 @@ class SelectionTests(unittest.TestCase):
         budget = Budget(100, 1.0, 0.0, 0.0)
         with self.assertRaisesRegex(RuntimeError, "Token budget exceeded"):
             budget.reserve("x" * 1000, 20)
+
+    def test_llm_rubric_never_reintroduces_hard_exclusions(self):
+        papers = [
+            Paper(id="blocked", title="Blocked Medical Paper", selection_decision="hard_exclude", score=-1.0),
+            Paper(id="keep", title="Graph Agent", abstract="A graph reasoning agent.", selection_decision="rule_score"),
+        ]
+
+        class FakeRanker:
+            prompt = ""
+
+            def generate_json(self, system, prompt, **kwargs):
+                self.prompt = prompt
+                return {"scores": [{
+                    "id": "p000001", "topic": 35, "problem": 15,
+                    "method": 24, "confidence": 8, "reason": "Direct graph-agent alignment.",
+                }]}, {}
+
+        backend = FakeRanker()
+        ranked = llm_rerank(papers, {"interests": ["graph agent"]}, backend)
+        kept = next(paper for paper in ranked if paper.id == "keep")
+        blocked = next(paper for paper in ranked if paper.id == "blocked")
+        self.assertEqual(kept.score, 0.82)
+        self.assertEqual(kept.selection_decision, "include")
+        self.assertEqual(blocked.selection_decision, "hard_exclude")
+        self.assertNotIn("Blocked Medical Paper", backend.prompt)
+
+    def test_two_thousand_candidates_are_batched_and_capped_at_five_hundred(self):
+        papers = [Paper(id=f"paper-{index}", title=f"Graph Agent {index}", abstract="Graph agent method.") for index in range(2000)]
+
+        class BulkRanker:
+            calls = 0
+
+            def generate_json(self, system, prompt, **kwargs):
+                self.calls += 1
+                batch = json.loads(prompt.rsplit("Papers:\n", 1)[1])
+                return {"scores": [{
+                    "id": item["id"], "topic": 30, "problem": 12,
+                    "method": 20, "confidence": 8, "reason": "Relevant graph-agent paper.",
+                } for item in batch]}, {}
+
+        backend = BulkRanker()
+        config = {
+            "preferences": {"interests": ["graph agent"], "include_keywords": [], "exclude_keywords": [], "categories": []},
+            "selection": {
+                "ranker": "llm", "min_score": 0.60, "max_selected_papers": 500,
+                "llm_batch_size": 40, "llm_abstract_chars": 1600,
+                "llm_max_output_tokens": 4000, "llm_thinking_mode": "disabled",
+            },
+            "backend": {},
+        }
+        selected = rank_and_select(config, papers, backend=backend)
+        self.assertEqual(len(selected), 500)
+        self.assertEqual(backend.calls, 50)
+        self.assertTrue(all(paper.score == 0.70 for paper in selected))
+
+
+class BackendTests(unittest.TestCase):
+    def test_deepseek_json_and_thinking_parameters(self):
+        captured = {}
+
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def read(self):
+                return json.dumps({
+                    "choices": [{"message": {"content": '{"ok":true}'}}],
+                    "usage": {"prompt_tokens": 10, "completion_tokens": 2},
+                }).encode()
+
+        def fake_urlopen(request, timeout):
+            captured["payload"] = json.loads(request.data.decode())
+            return FakeResponse()
+
+        config = {
+            "api_key_env": "PAPER_DIGEST_API_KEY", "base_url": "https://api.deepseek.com",
+            "model": "deepseek-v4-flash", "temperature": 0.2, "max_output_tokens": 100,
+            "timeout_seconds": 30, "json_mode": True, "thinking_mode": "disabled",
+            "supports_thinking_toggle": True,
+        }
+        with patch.dict(os.environ, {"PAPER_DIGEST_API_KEY": "test-only-key"}), patch("urllib.request.urlopen", fake_urlopen):
+            value, usage = OpenAICompatibleBackend(config).generate_json("JSON only", "Return JSON")
+        self.assertTrue(value["ok"])
+        self.assertEqual(usage["output_tokens"], 2)
+        self.assertEqual(captured["payload"]["response_format"], {"type": "json_object"})
+        self.assertEqual(captured["payload"]["thinking"], {"type": "disabled"})
 
 
 class OpenReviewTests(unittest.TestCase):
