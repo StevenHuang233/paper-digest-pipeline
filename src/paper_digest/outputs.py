@@ -80,43 +80,137 @@ def latex_escape(text: str) -> str:
 
 
 def render_latex(records: list[dict]) -> str:
+    evidence_labels = {
+        "fulltext": "全文：已读取正文至附录或参考文献前",
+        "abstract": "摘要：仅依据可靠摘要",
+        "metadata": "元数据：仅验证书目信息",
+    }
+    evidence_counts = {
+        level: sum(record["review"].get("evidence_level") == level for record in records)
+        for level in evidence_labels
+    }
     body: list[str] = []
     for record in records:
         paper, review = record["paper"], record["review"]
         title = latex_escape(paper["title"])
         title = title.replace(r"$\beta$", r"\texorpdfstring{$\beta$}{beta}")
         url = paper.get("url") or paper.get("pdf_url") or ""
-        body.append(f"\\section{{{title}}}")
+        authors = ", ".join(paper.get("authors") or [])
+        published = str(paper.get("published") or "").split("T", 1)[0]
+        venue = str(paper.get("venue") or "")
+        categories = "; ".join(paper.get("categories") or [])
+        level = str(review.get("evidence_level") or "unknown")
+        info: list[str] = []
+        if authors:
+            info.append(f"\\textbf{{作者：}}{latex_escape(authors)}")
+        publication = "；".join(filter(None, [published, venue]))
+        if publication:
+            info.append(f"\\textbf{{日期/发表：}}{latex_escape(publication)}")
+        if categories:
+            info.append(f"\\textbf{{分类标签：}}{latex_escape(categories)}")
+        info.append(f"\\textbf{{证据等级：}}{latex_escape(evidence_labels.get(level, level))}")
         if url:
-            body.append(f"\\noindent\\url{{{url}}}\\par")
-        meta = " · ".join(filter(None, [", ".join(paper.get("authors") or []), paper.get("published", ""), paper.get("venue", "")]))
-        if meta:
-            body.append(f"\\noindent {latex_escape(meta)}\\par")
-        body.append(f"\\noindent\\textbf{{Evidence:}} \\texttt{{{latex_escape(review.get('evidence_level', 'unknown'))}}}\\par")
-        for key, label in SECTIONS:
-            body.append(f"\\subsection*{{{latex_escape(label)}}}")
+            info.append(f"\\textbf{{论文链接：}}\\href{{\\detokenize{{{url}}}}}{{打开论文来源}}")
+        body.extend([
+            "\\begin{samepage}",
+            f"\\subsection{{{title}}}",
+            "\\paperbox{" + r"\\".join(info) + "}",
+            "\\end{samepage}",
+        ])
+        display_labels = {
+            "background": "问题背景",
+            "motivation": "Motivation｜为什么需要解决",
+            "idea": "Idea｜核心思想",
+            "method": "Method｜实现流程与关键公式",
+            "experiments": "实验｜做了什么、说明了什么",
+            "conclusion": "结论",
+        }
+        for key, _ in SECTIONS:
+            body.append(f"\\parthead{{{latex_escape(display_labels[key])}}}")
             body.append(latex_escape(review.get(key, "").strip()))
         if review.get("limitations"):
-            body.append("\\subsection*{证据与局限 / Evidence Notes}")
+            body.append("\\parthead{证据与局限}")
             body.append(latex_escape(review["limitations"].strip()))
-    return r"""\documentclass[11pt,a4paper]{ctexart}
-\usepackage[margin=2.25cm]{geometry}
-\usepackage{amsmath,amssymb,booktabs,longtable,microtype,xurl}
-\usepackage[colorlinks=true,linkcolor=blue,urlcolor=blue]{hyperref}
+    preamble = rf"""\documentclass[11pt,UTF8,a4paper]{{ctexart}}
+\usepackage[margin=24mm,headheight=22pt]{{geometry}}
+\usepackage{{amsmath,amssymb,booktabs,longtable,microtype,xurl}}
+\usepackage{{xcolor}}
+\usepackage{{fancyhdr}}
+\usepackage[colorlinks=true,linkcolor=navy,urlcolor=blue]{{hyperref}}
+\definecolor{{navy}}{{HTML}}{{16324F}}
+\definecolor{{blue}}{{HTML}}{{246B9E}}
+\definecolor{{softblue}}{{HTML}}{{EAF3F8}}
+\definecolor{{graytext}}{{HTML}}{{58636D}}
+\definecolor{{rulegray}}{{HTML}}{{D9E2E8}}
+\hypersetup{{
+  pdfauthor={{Paper Digest Pipeline}},
+  pdftitle={{每日论文六段式深度总结}}
+}}
 \sloppy
-\setlength{\emergencystretch}{3em}
+\raggedbottom
+\setlength{{\emergencystretch}}{{3em}}
 \Urlmuskip=0mu plus 1mu
-\setlength{\parindent}{2em}
-\setlength{\parskip}{0.45em}
-\begin{document}
-\title{Paper Digest}
-\author{}
-\date{\today}
-\maketitle
-\pagestyle{plain}
+\setlength{{\parindent}}{{2em}}
+\setlength{{\parskip}}{{0.45em}}
+\makeatletter
+\renewcommand\section{{\@startsection{{section}}{{1}}{{0pt}}{{2.2ex plus .5ex minus .2ex}}{{1.0ex}}{{\Large\bfseries\color{{navy}}}}}}
+\renewcommand\subsection{{\@startsection{{subsection}}{{2}}{{0pt}}{{1.8ex plus .4ex minus .2ex}}{{0.7ex}}{{\large\bfseries\color{{navy}}\raggedright}}}}
+\makeatother
+\pagestyle{{fancy}}
+\fancyhf{{}}
+\fancyhead[L]{{\small\color{{graytext}}每日论文精读}}
+\fancyhead[R]{{\small\color{{graytext}}六段式深度总结}}
+\fancyfoot[C]{{\small\color{{graytext}}\thepage}}
+\renewcommand{{\headrulewidth}}{{0.4pt}}
+\renewcommand{{\headrule}}{{\hbox to\headwidth{{\color{{rulegray}}\leaders\hrule height \headrulewidth\hfill}}}}
+\newcommand{{\paperbox}}[1]{{%
+  \par\noindent\colorbox{{softblue}}{{%
+    \parbox{{\dimexpr\linewidth-2\fboxsep\relax}}{{\small #1}}%
+  }}\par
+}}
+\newcommand{{\parthead}}[1]{{%
+  \par\pagebreak[1]\vspace{{1.0em}}%
+  {{\large\bfseries\color{{blue}}#1\par}}%
+  \nopagebreak[4]\vspace{{0.25em}}%
+}}
+\begin{{document}}
+\pagenumbering{{gobble}}
+\begin{{titlepage}}
+  \thispagestyle{{empty}}
+  \centering
+  \vspace*{{2.5cm}}
+  {{\Huge\bfseries\color{{navy}}每日论文精读\par}}
+  \vspace{{0.45cm}}
+  {{\Huge\bfseries\color{{navy}}六段式深度总结\par}}
+  \vspace{{0.8cm}}
+  {{\Large\color{{blue}}问题背景—Motivation—Idea—Method—实验—结论\par}}
+  \vspace{{1.4cm}}
+  {{\color{{rulegray}}\rule{{0.72\textwidth}}{{1pt}}}}
+  \vspace{{1.4cm}}
+  \begin{{minipage}}{{0.82\textwidth}}
+    \raggedright\color{{graytext}}
+    本册按论文正文重建因果链，不做逐句翻译。Idea 提炼决定性的概念变化；
+    Method 从输入出发说明实现阶段、组件接口、训练与推理，并解释必要公式；
+    实验同时回答“做了什么”和“说明了什么”。正文阅读默认截止于附录、
+    补充材料、致谢或参考文献之前；未取得全文时按摘要或元数据降级。
+  \end{{minipage}}
+  \vfill
+  {{\large 本期收录：{len(records)} 篇\par}}
+  \vspace{{0.25cm}}
+  {{\normalsize 全文 {evidence_counts['fulltext']}｜摘要 {evidence_counts['abstract']}｜元数据 {evidence_counts['metadata']}\par}}
+  \vspace{{0.25cm}}
+  {{\large 生成日期：\today\par}}
+\end{{titlepage}}
+\clearpage
+\pagenumbering{{roman}}
 \tableofcontents
-\newpage
-""" + "\n\n".join(body) + "\n\\end{document}\n"
+\thispagestyle{{fancy}}
+\clearpage
+\pagenumbering{{arabic}}
+\section{{论文精读}}
+本期收录 {len(records)} 篇，按筛选结果顺序排列；完整分类标签保留在论文信息框中。
+"""
+    return preamble + "\n\n".join(body) + "\n\\end{document}\n"
 
 
 def write_outputs(run_dir: Path, records: list[dict], formats: list[str], compile_pdf: bool) -> dict[str, str]:

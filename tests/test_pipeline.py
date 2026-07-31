@@ -335,8 +335,37 @@ class OutputTests(unittest.TestCase):
             | {"evidence_level": "fulltext", "limitations": ""},
         }
         rendered = render_latex([record])
-        self.assertIn(r"\section{Paper}", rendered)
-        self.assertNotIn(r"\section{1. Paper}", rendered)
+        self.assertIn(r"\section{论文精读}", rendered)
+        self.assertIn(r"\subsection{Paper}", rendered)
+        self.assertNotIn(r"\subsection{1. Paper}", rendered)
+
+    def test_latex_uses_generic_daily_digest_template_and_dynamic_evidence_counts(self):
+        records = [
+            {
+                "paper": {
+                    "title": "Full Text Paper", "url": "https://arxiv.org/abs/1",
+                    "authors": ["Ada Lovelace"], "published": "2026-07-31T01:02:03Z",
+                    "venue": "ExampleConf", "categories": ["cs.AI", "cs.LG"],
+                },
+                "review": {key: "正文。" for key in ["background", "motivation", "idea", "method", "experiments", "conclusion"]}
+                | {"evidence_level": "fulltext", "limitations": "局限。"},
+            },
+            {
+                "paper": {"title": "Abstract Paper", "url": "https://arxiv.org/abs/2", "authors": []},
+                "review": {key: "摘要。" for key in ["background", "motivation", "idea", "method", "experiments", "conclusion"]}
+                | {"evidence_level": "abstract", "limitations": ""},
+            },
+        ]
+        rendered = render_latex(records)
+        self.assertIn("每日论文精读", rendered)
+        self.assertIn("六段式深度总结", rendered)
+        self.assertIn("本期收录：2 篇", rendered)
+        self.assertIn("全文 1｜摘要 1｜元数据 0", rendered)
+        self.assertIn(r"\newcommand{\paperbox}", rendered)
+        self.assertIn(r"\textbf{分类标签：}cs.AI; cs.LG", rendered)
+        self.assertIn(r"\href{\detokenize{https://arxiv.org/abs/1}}{打开论文来源}", rendered)
+        self.assertIn(r"\parthead{Method｜实现流程与关键公式}", rendered)
+        self.assertNotIn("张文涛老师", rendered)
 
     def test_chinese_review_prompt_requires_simplified_chinese_fields(self):
         prompt = build_review_prompt(Paper(id="x", title="Paper"), "Evidence", "fulltext", "zh-CN")
