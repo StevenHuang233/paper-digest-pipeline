@@ -12,6 +12,7 @@ from .models import Paper, SixPartReview
 from .outputs import write_outputs
 from .review_prompt import SYSTEM_PROMPT, build_review_prompt
 from .sources import fetch_arxiv, fetch_crossref, fetch_json, fetch_openreview
+from .sources.arxiv import resolve_date
 from .state import read_json, write_json
 
 
@@ -37,16 +38,22 @@ def discover(config: dict, config_path: Path) -> list[Paper]:
     return deduplicate(fetch_json(config, config_dir=config_path.parent))
 
 
-def job_directory(config: dict) -> Path:
+def job_label(config: dict) -> str:
     source = config["discovery"]["source"]
     discriminator = config["discovery"].get("date", "")
-    if source == "openreview":
+    if source == "arxiv":
+        discriminator = str(resolve_date(str(discriminator)))
+    elif source == "openreview":
         discriminator = config["discovery"]["openreview"]["venue_id"]
     elif source == "crossref":
         discriminator = config["discovery"]["crossref"]["conference"]
     elif source == "json":
         discriminator = Path(config["discovery"]["json_path"]).stem
-    return Path(config["project"]["output_dir"]) / f"{safe_name(source)}-{safe_name(str(discriminator))}"
+    return f"{safe_name(source)}-{safe_name(str(discriminator))}"
+
+
+def job_directory(config: dict) -> Path:
+    return Path(config["project"]["output_dir"]) / job_label(config)
 
 
 def rank_and_select(
@@ -167,6 +174,7 @@ def run_pipeline(config: dict, config_path: Path, *, dry_run: bool = False, forc
         review_target_count = min(len(selected), int(config["review"]["max_papers"]))
         manifest = {
             "status": "dry-run", "candidate_count": len(candidates), "selected_count": len(selected),
+            "job_label": job_label(config),
             "candidate_limit_reached": len(candidates) >= candidate_limit,
             "selected_limit_reached": len(selected) >= int(config["selection"]["max_selected_papers"]),
             "selection_decisions": decision_counts,
@@ -219,6 +227,7 @@ def run_pipeline(config: dict, config_path: Path, *, dry_run: bool = False, forc
     outputs = write_outputs(run_dir, records, list(config["output"]["formats"]), bool(config["output"]["compile_pdf"]))
     manifest = {
         "status": "complete" if len(records) == len(review_targets) else "partial",
+        "job_label": job_label(config),
         "candidate_count": len(candidates), "selected_count": len(selected),
         "candidate_limit_reached": len(candidates) >= candidate_limit,
         "selected_limit_reached": len(selected) >= int(config["selection"]["max_selected_papers"]),

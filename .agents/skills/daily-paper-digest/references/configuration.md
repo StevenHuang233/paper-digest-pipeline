@@ -1,5 +1,7 @@
 # Configuration reference
 
+Use the repository-root `config.toml` as the only non-secret configuration source. Do not maintain a second example config that can drift from production. Its Chinese comments are user-facing guidance; preserve them when changing fields.
+
 ## Sources
 
 `discovery.source` accepts:
@@ -39,3 +41,19 @@ The candidate cap applies after the configured source query. If `candidate_limit
 ## Output and state
 
 Each job gets a stable directory under `project.output_dir` with `candidates.json`, `selected.json`, `state.json`, per-paper checkpoints, downloaded PDFs, `manifest.json`, and configured digest formats. Install the optional `.[pdf]` dependency for local PDF extraction; otherwise the pipeline honestly falls back to abstract evidence. XeLaTeX or LuaLaTeX is required to compile PDF; LaTeX source is still retained when no engine is installed.
+
+## GitHub Actions and email
+
+Use `.github/workflows/daily-digest.yml` for unattended daily runs. GitHub cron expressions use UTC and must remain in workflow YAML because Actions cannot load a TOML file before scheduling a job. Keep all application defaults in `config.toml`; use workflow-dispatch inputs only as explicit one-run overrides. Add concurrency control so slow runs do not overlap, always upload outputs and logs, and mark partial generation or failed notification as a failed workflow.
+
+Store these values as repository Actions Secrets, never TOML values:
+
+- `PAPER_DIGEST_API_KEY`: model provider key.
+- `PAPER_DIGEST_SMTP_USERNAME`: full sender mailbox address.
+- `PAPER_DIGEST_SMTP_PASSWORD`: SMTP authorization code or app password, not a normal account password.
+- `PAPER_DIGEST_EMAIL_TO`: one or more comma-separated recipient addresses.
+- `PAPER_DIGEST_EMAIL_FROM`: optional envelope/header sender; fall back to the SMTP username.
+
+Configure only the environment-variable names in the `backend` and `email` sections. Use `smtp.qq.com:465` with `ssl` for QQ Mail, `smtp.gmail.com:465` with `ssl` for Gmail, or the provider's documented host, port, and TLS mode. Never print the password while diagnosing authentication failures.
+
+Invoke `paper-digest email --config config.toml --result run-result.json --status success` to send a result. Attach the generated PDF and Markdown only when present and under `email.max_attachment_mb`; attach the run log for partial or failed runs. Include counts, limit warnings, and the Actions run URL in the message body.

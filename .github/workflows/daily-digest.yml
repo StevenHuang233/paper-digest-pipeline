@@ -2,43 +2,124 @@ name: Daily paper digest
 
 on:
   schedule:
+    # GitHub Actions 使用 UTC；01:30 UTC = 北京时间 09:30。
     - cron: "30 1 * * *"
   workflow_dispatch:
     inputs:
       date:
-        description: "arXiv submission date (YYYY-MM-DD, today, or yesterday)"
+        description: "可选：覆盖 config.toml 中的日期（today、yesterday 或 YYYY-MM-DD）"
         required: false
-        default: "yesterday"
+        type: string
       max_papers:
-        description: "Maximum papers to summarize"
+        description: "可选：覆盖本次全文总结数量；留空使用 config.toml"
         required: false
-        default: "5"
+        type: string
+
+concurrency:
+  group: daily-paper-digest
+  cancel-in-progress: false
 
 jobs:
   digest:
     runs-on: ubuntu-latest
+    timeout-minutes: 360
     permissions:
       contents: read
     env:
       PAPER_DIGEST_API_KEY: ${{ secrets.PAPER_DIGEST_API_KEY }}
-      PAPER_DIGEST_BASE_URL: ${{ vars.PAPER_DIGEST_BASE_URL }}
-      PAPER_DIGEST_MODEL: ${{ vars.PAPER_DIGEST_MODEL }}
+      PAPER_DIGEST_SMTP_USERNAME: ${{ secrets.PAPER_DIGEST_SMTP_USERNAME }}
+      PAPER_DIGEST_SMTP_PASSWORD: ${{ secrets.PAPER_DIGEST_SMTP_PASSWORD }}
+      PAPER_DIGEST_EMAIL_TO: ${{ secrets.PAPER_DIGEST_EMAIL_TO }}
+      PAPER_DIGEST_EMAIL_FROM: ${{ secrets.PAPER_DIGEST_EMAIL_FROM }}
+      PAPER_DIGEST_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: 检出仓库
+        uses: actions/checkout@v4
+
+      - name: 安装 Python
+        uses: actions/setup-python@v5
         with:
           python-version: "3.12"
           cache: pip
-      - run: pip install -e ".[pdf]"
-      - name: Generate digest
+
+      - name: 安装项目和中文 LaTeX
         shell: bash
         run: |
-          digest_date="${{ inputs.date || 'yesterday' }}"
-          max_papers="${{ inputs.max_papers || '5' }}"
-          paper-digest run --config config.example.toml --date "$digest_date" --max-papers "$max_papers"
-      - uses: actions/upload-artifact@v4
+          pip install -e ".[pdf]"
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends texlive-xetex texlive-lang-chinese fonts-noto-cjk
+
+      - name: 生成论文日报
+        id: generate
+        continue-on-error: true
+        shell: bash
+        env:
+          OVERRIDE_DATE: ${{ inputs.date }}
+          OVERRIDE_MAX_PAPERS: ${{ inputs.max_papers }}
+        run: |
+          args=(run --config config.toml)
+          if [[ -n "$OVERRIDE_DATE" ]]; then
+            args+=(--date "$OVERRIDE_DATE")
+          fi
+          if [[ -n "$OVERRIDE_MAX_PAPERS" ]]; then
+            args+=(--max-papers "$OVERRIDE_MAX_PAPERS")
+          fi
+
+          set +e
+          paper-digest "${args[@]}" 2> >(tee run.log >&2) | tee run-result.json
+          exit_code=${PIPESTATUS[0]}
+          set -e
+
+          digest_status="failure"
+          if [[ "$exit_code" -eq 0 ]] && jq -e . run-result.json >/dev/null 2>&1; then
+            manifest_status="$(jq -r '.status // "failure"' run-result.json)"
+            if [[ "$manifest_status" == "complete" ]]; then
+              digest_status="success"
+            elif [[ "$manifest_status" == "partial" ]]; then
+              digest_status="partial"
+              exit_code=2
+            fi
+          fi
+          echo "exit_code=$exit_code" >> "$GITHUB_OUTPUT"
+          echo "digest_status=$digest_status" >> "$GITHUB_OUTPUT"
+
+      - name: 发送邮件通知
+        id: notify
         if: always()
+        continue-on-error: true
+        shell: bash
+        env:
+          DIGEST_STATUS: ${{ steps.generate.outputs.digest_status || 'failure' }}
+        run: |
+          paper-digest email \
+            --config config.toml \
+            --result run-result.json \
+            --status "$DIGEST_STATUS" \
+            --log run.log \
+            --run-url "$PAPER_DIGEST_RUN_URL"
+
+      - name: 上传生成结果和日志
+        if: always()
+        uses: actions/upload-artifact@v4
         with:
           name: paper-digest-${{ github.run_id }}
-          path: outputs/
+          path: |
+            outputs/
+            run-result.json
+            run.log
           if-no-files-found: warn
+          retention-days: 30
+
+      - name: 汇总任务状态
+        if: always()
+        shell: bash
+        run: |
+          if [[ "${{ steps.generate.outputs.exit_code || '1' }}" != "0" ]]; then
+            echo "论文日报生成失败或只完成了一部分，请查看 run.log 和 Artifacts。" >&2
+            exit 1
+          fi
+          if [[ "${{ steps.notify.outcome }}" != "success" ]]; then
+            echo "论文日报已生成，但邮件发送失败，请检查 SMTP Secrets 和邮箱授权码。" >&2
+            exit 1
+          fi

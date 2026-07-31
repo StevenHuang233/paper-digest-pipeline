@@ -1,0 +1,124 @@
+# Paper Digest 的唯一运行配置文件。
+# 本文件可以安全提交到 Git；API Key、邮箱账号和邮箱授权码必须放在 GitHub Secrets 中。
+
+[project]
+name = "multimodal-opd-daily-digest" # 项目名，也用于区分输出
+language = "zh-CN"                   # 六段式总结语言，例如 zh-CN、en、ja
+output_dir = "outputs"               # 所有候选、筛选记录和总结产物的根目录
+
+[preferences]
+# 兴趣描述是 LLM 判断 include/exclude 的主要依据。建议写清“研究对象 + 问题 + 方法偏好”。
+interests = [
+  "multimodal large language models, vision-language models, and unified multimodal representation learning",
+  "multimodal reasoning, visual grounding, multimodal retrieval, generation, and evaluation",
+  "embodied multimodal agents, vision-language-action models, perception-to-decision systems",
+  "on-policy distillation (OPD), including language-only and multimodal OPD"
+]
+# 正向关键词仅作为提示，不是必须命中条件。适合放缩写、别名、任务名和模型家族。
+include_keywords = [
+  "multimodal", "multi-modal", "vision-language", "vision language", "VLM", "MLLM",
+  "audio-visual", "cross-modal", "visual grounding", "multimodal reasoning",
+  "vision-language-action", "embodied agent", "omnimodal", "OPD", "on-policy distillation"
+]
+# 负向关键词是不可撤销的硬排除；只有在某个短语必然不相关时才填写。
+exclude_keywords = []
+# arXiv 会在服务端按类别过滤。类别过窄会漏论文，下面覆盖主要 AI 相关方向。
+categories = ["cs.AI", "cs.LG", "cs.CL", "cs.CV", "cs.MM", "cs.IR", "cs.RO", "cs.HC", "cs.NE", "stat.ML"]
+
+[discovery]
+source = "arxiv"                    # arxiv | crossref | openreview | json
+date = "yesterday"                  # today | yesterday | YYYY-MM-DD；每日任务建议 yesterday
+max_candidates = 2000               # 进入筛选的候选上限
+page_size = 200                      # arXiv 单页数量
+request_delay_seconds = 3.1          # arXiv 多页请求间隔，建议不低于 3 秒
+json_path = ""                       # source=json 时填写，路径相对于本文件
+
+[discovery.openreview]
+venue_id = "ICLR.cc/2026/Conference" # source=openreview 时填写
+status = "accepted"                  # accepted | all
+submission_invitation = ""           # status=all 且默认 invitation 不适用时填写
+base_url = "https://api2.openreview.net"
+
+[discovery.crossref]
+conference = "Advances in Neural Information Processing Systems" # source=crossref 时填写
+from_date = "2025-01-01"
+until_date = "2025-12-31"
+mailto = ""                          # 可选：填写联系邮箱可使用 Crossref polite pool
+min_venue_similarity = 0.15
+base_url = "https://api.crossref.org"
+
+[selection]
+ranker = "llm"                       # llm：二元语义筛选；rules：零成本规则预筛
+min_score = 0.0                       # 仅 rules 模式使用；LLM 二元筛选忽略此值
+max_selected_papers = 500             # include 后最多保留数量，不会自动全部生成全文总结
+rules_preview_min_score = 0.0          # --dry-run 的规则预览阈值
+llm_batch_size = 40                    # 每次筛选请求包含的论文数
+llm_abstract_chars = 1600              # 每篇送入筛选模型的摘要字符上限
+llm_max_output_tokens = 4000           # 每批二元决策的最大输出 token
+llm_thinking_mode = "disabled"         # 筛选阶段关闭思考模式以降低成本
+# 这是筛选的最终判定边界。模型对每篇论文只返回 include 或 exclude，不进行分数排序。
+decision_policy = """
+Include a paper when either condition A or condition B is satisfied.
+
+A. Its primary contribution studies genuinely multimodal learning involving at least two distinct
+modalities or signal types, such as image/video, text, audio, touch, or action. This includes VLM/MLLM,
+vision-language or audio-visual learning, multimodal reasoning, grounding, cross-modal retrieval,
+multimodal RAG, multimodal datasets/evaluation, and embodied or computer-use agents whose visual or
+multimodal observations are central. Agent and reward-model evaluation papers count when they directly
+evaluate such multimodal agents.
+
+B. Its primary contribution studies OPD or on-policy distillation, including language-only OPD as well
+as multimodal OPD. OPD relevance alone is sufficient for inclusion.
+
+Exclude pure single-modality image/video generation, coding, reconstruction, segmentation, enhancement,
+or multi-view vision unless language, audio, touch, action, or another distinct modality is central to the
+method. Also exclude incidental multimodal mentions, unrelated applications that merely call a foundation
+model, and papers without enough title/abstract evidence. Apply these rules consistently across batches.
+"""
+
+[review]
+max_papers = 10                       # 每次做 PDF 全文六段式总结的上限；设为 500 可总结全部入选论文
+
+[backend]
+type = "openai_compatible"            # openai_compatible | codex；Actions 推荐前者
+base_url = "https://api.deepseek.com"
+model = "deepseek-v4-flash"
+api_key_env = "PAPER_DIGEST_API_KEY"  # 这里只写环境变量名，绝不能写真实密钥
+max_output_tokens = 5500               # 单篇六段式总结最大输出 token
+temperature = 0.2
+timeout_seconds = 600
+codex_model = ""                       # type=codex 时可指定模型，留空使用 Codex 默认值
+json_mode = true
+thinking_mode = "disabled"
+supports_thinking_toggle = true        # DeepSeek OpenAI 兼容接口的 thinking 开关
+
+[fulltext]
+download_pdf = true                    # true：下载并读取 PDF；false：只按摘要总结
+max_main_text_chars = 180000            # 截止附录/补充材料/致谢/参考文献前的正文字符上限
+
+[budget]
+max_total_tokens = 3000000             # 单次运行的硬 token 上限
+max_estimated_usd = 15.0                # 单次运行的预估费用硬上限（美元）
+# 按服务商当前价格填写；0 表示不做美元估算，但 token 上限仍生效。
+input_usd_per_million = 0.0
+output_usd_per_million = 0.0
+
+[output]
+formats = ["json", "markdown", "latex"]
+compile_pdf = true                     # Actions 会安装 XeLaTeX 并生成 digest.pdf
+
+[email]
+enabled = true                         # false 可暂时关闭邮件，但仍正常生成和上传产物
+smtp_host = "smtp.qq.com"              # QQ 邮箱；Gmail 改为 smtp.gmail.com
+smtp_port = 465
+security = "ssl"                       # ssl | starttls；QQ/Gmail 的 465 端口通常使用 ssl
+subject_prefix = "[Paper Digest]"
+username_env = "PAPER_DIGEST_SMTP_USERNAME" # 发件邮箱地址对应的 GitHub Secret 名称
+password_env = "PAPER_DIGEST_SMTP_PASSWORD" # 邮箱 SMTP 授权码，不是网页登录密码
+to_env = "PAPER_DIGEST_EMAIL_TO"           # 收件人；多个地址可用英文逗号分隔
+from_env = "PAPER_DIGEST_EMAIL_FROM"        # 可选；未设置时使用发件邮箱
+attach_pdf = true
+attach_markdown = true
+attach_log_on_failure = true
+max_attachment_mb = 20                # 单个附件上限，避免被邮箱服务器拒收
+timeout_seconds = 60

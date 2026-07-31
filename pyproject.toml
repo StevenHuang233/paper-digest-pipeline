@@ -7,6 +7,7 @@ name = "paper-digest-pipeline"
 version = "0.1.0"
 description = "Discover, rank, and synthesize arXiv or conference papers with a budget-aware six-part workflow."
 readme = "README.md"
+license = {file = "LICENSE"}
 requires-python = ">=3.11"
 dependencies = []
 

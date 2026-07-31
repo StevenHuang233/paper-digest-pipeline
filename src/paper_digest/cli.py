@@ -5,7 +5,8 @@ import json
 import shutil
 from pathlib import Path
 
-from .config import load_config, validate_config
+from .config import load_config, validate_config, validate_email_config
+from .emailer import read_result, send_digest_email
 from .orchestrator import discover, job_directory, run_pipeline
 from .state import write_json
 
@@ -13,7 +14,7 @@ from .state import write_json
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="paper-digest", description="Discover, filter, and synthesize academic papers.")
     sub = parser.add_subparsers(dest="command", required=True)
-    init = sub.add_parser("init", help="Copy the example config to a new location")
+    init = sub.add_parser("init", help="Copy the repository config to a new location")
     init.add_argument("--output", default="config.toml")
     for name in ("discover", "run", "summarize"):
         cmd = sub.add_parser(name)
@@ -29,6 +30,12 @@ def _parser() -> argparse.ArgumentParser:
         if name == "summarize":
             cmd.add_argument("--papers", required=True, help="Path to a JSON list or {papers:[...]} file")
             cmd.add_argument("--force", action="store_true")
+    email = sub.add_parser("email", help="Send a digest result through the configured SMTP server")
+    email.add_argument("--config", default="config.toml")
+    email.add_argument("--result", help="Path to the JSON result printed by paper-digest run")
+    email.add_argument("--status", choices=["success", "partial", "failure"], default="success")
+    email.add_argument("--log", help="Failure log to attach when configured")
+    email.add_argument("--run-url", default="", help="GitHub Actions or other run URL")
     return parser
 
 
@@ -48,7 +55,7 @@ def _overrides(config: dict, args: argparse.Namespace) -> None:
 def main(argv: list[str] | None = None) -> None:
     args = _parser().parse_args(argv)
     if args.command == "init":
-        source = Path(__file__).resolve().parents[2] / "config.example.toml"
+        source = Path(__file__).resolve().parents[2] / "config.toml"
         target = Path(args.output).expanduser().resolve()
         if target.exists():
             raise SystemExit(f"Refusing to overwrite existing file: {target}")
@@ -57,6 +64,14 @@ def main(argv: list[str] | None = None) -> None:
         print(target)
         return
     config, config_path = load_config(args.config)
+    if args.command == "email":
+        validate_email_config(config)
+        result = send_digest_email(
+            config, read_result(args.result), status=args.status,
+            run_url=args.run_url, log_path=args.log,
+        )
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return
     _overrides(config, args)
     validate_config(config, require_backend=args.command != "discover")
     if args.command == "discover":

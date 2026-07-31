@@ -10,11 +10,12 @@ from unittest.mock import patch
 from paper_digest.backends import OpenAICompatibleBackend
 from paper_digest.budget import Budget
 from paper_digest.config import load_config
+from paper_digest.emailer import build_message, read_result, send_digest_email
 from paper_digest.filtering import llm_rerank, rule_rank
 from paper_digest.fulltext import CUTOFF
 from paper_digest.models import Paper
 from paper_digest.outputs import latex_escape, render_latex, render_markdown
-from paper_digest.orchestrator import rank_and_select, run_pipeline
+from paper_digest.orchestrator import job_label, rank_and_select, run_pipeline
 from paper_digest.review_prompt import build_review_prompt
 from paper_digest.sources.arxiv import build_query, parse_feed, resolve_date
 from paper_digest.sources.crossref import parse_items, venue_similarity
@@ -36,6 +37,10 @@ class ArxivTests(unittest.TestCase):
         self.assertEqual(papers[0].id, "2607.12345v1")
         self.assertEqual(papers[0].categories, ["cs.LG"])
         self.assertTrue(papers[0].pdf_url.endswith("2607.12345v1"))
+
+    def test_explicit_date_is_used_in_stable_job_label(self):
+        config = {"discovery": {"source": "arxiv", "date": "2026-07-30"}}
+        self.assertEqual(job_label(config), "arxiv-2026-07-30")
 
 
 class SelectionTests(unittest.TestCase):
@@ -158,6 +163,82 @@ class BackendTests(unittest.TestCase):
         self.assertEqual(usage["output_tokens"], 2)
         self.assertEqual(captured["payload"]["response_format"], {"type": "json_object"})
         self.assertEqual(captured["payload"]["thinking"], {"type": "disabled"})
+
+
+class EmailTests(unittest.TestCase):
+    def _config(self):
+        config, _ = load_config(Path(__file__).parent / "fixtures" / "dryrun.toml")
+        config["email"].update({
+            "enabled": True, "smtp_host": "smtp.example.com", "smtp_port": 465,
+            "security": "ssl", "username_env": "TEST_SMTP_USER",
+            "password_env": "TEST_SMTP_PASSWORD", "to_env": "TEST_EMAIL_TO",
+            "from_env": "TEST_EMAIL_FROM", "attach_pdf": True,
+            "attach_markdown": True, "attach_log_on_failure": True,
+        })
+        return config
+
+    def test_message_contains_counts_and_configured_attachments(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            markdown = root / "digest.md"
+            pdf = root / "digest.pdf"
+            markdown.write_text("# Digest", encoding="utf-8")
+            pdf.write_bytes(b"%PDF-test")
+            result = {
+                "candidate_count": 200, "selected_count": 12,
+                "review_target_count": 2, "completed_count": 2, "failed_count": 0,
+                "selection_decisions": {"include": 12, "exclude": 188, "hard_exclude": 0},
+                "outputs": {"markdown": str(markdown), "pdf": str(pdf)},
+            }
+            env = {
+                "TEST_SMTP_USER": "sender@example.com", "TEST_SMTP_PASSWORD": "test-app-password",
+                "TEST_EMAIL_TO": "one@example.com,two@example.com", "TEST_EMAIL_FROM": "",
+            }
+            with patch.dict(os.environ, env, clear=False):
+                message, username, password, recipients = build_message(
+                    self._config(), result, status="success", run_url="https://example.com/run/1",
+                )
+            self.assertEqual(username, "sender@example.com")
+            self.assertEqual(password, "test-app-password")
+            self.assertEqual(recipients, ["one@example.com", "two@example.com"])
+            self.assertIn("候选论文：200", message.get_body().get_content())
+            self.assertEqual(sorted(part.get_filename() for part in message.iter_attachments()), ["digest.md", "digest.pdf"])
+
+    def test_smtp_ssl_is_mocked_and_password_is_not_returned(self):
+        captured = {}
+
+        class FakeSMTP:
+            def __init__(self, host, port, **kwargs):
+                captured.update({"host": host, "port": port})
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def login(self, username, password):
+                captured.update({"username": username, "password": password})
+
+            def send_message(self, message):
+                captured["subject"] = str(message["Subject"])
+
+        env = {
+            "TEST_SMTP_USER": "sender@example.com", "TEST_SMTP_PASSWORD": "secret-value",
+            "TEST_EMAIL_TO": "receiver@example.com", "TEST_EMAIL_FROM": "",
+        }
+        with patch.dict(os.environ, env, clear=False), patch("smtplib.SMTP_SSL", FakeSMTP):
+            response = send_digest_email(self._config(), {}, status="failure")
+        self.assertTrue(response["sent"])
+        self.assertEqual(captured["host"], "smtp.example.com")
+        self.assertNotIn("secret-value", json.dumps(response))
+
+    def test_invalid_or_missing_result_is_treated_as_empty(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "result.json"
+            path.write_text("not-json", encoding="utf-8")
+            self.assertEqual(read_result(path), {})
+            self.assertEqual(read_result(Path(temp) / "missing.json"), {})
 
 
 class FullTextTests(unittest.TestCase):

@@ -3,7 +3,6 @@ __pycache__/
 *.egg-info/
 .venv/
 .env
-config.toml
 outputs/
 .pytest_cache/
 .test-output/

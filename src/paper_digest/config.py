@@ -41,6 +41,13 @@ DEFAULTS: dict[str, Any] = {
         "input_usd_per_million": 0.0, "output_usd_per_million": 0.0,
     },
     "output": {"formats": ["json", "markdown", "latex"], "compile_pdf": True},
+    "email": {
+        "enabled": False, "smtp_host": "", "smtp_port": 465, "security": "ssl",
+        "subject_prefix": "[Paper Digest]", "username_env": "PAPER_DIGEST_SMTP_USERNAME",
+        "password_env": "PAPER_DIGEST_SMTP_PASSWORD", "to_env": "PAPER_DIGEST_EMAIL_TO",
+        "from_env": "PAPER_DIGEST_EMAIL_FROM", "attach_pdf": True, "attach_markdown": True,
+        "attach_log_on_failure": True, "max_attachment_mb": 20, "timeout_seconds": 60,
+    },
 }
 
 
@@ -78,6 +85,22 @@ def load_config(path: str | Path) -> tuple[dict[str, Any], Path]:
     return config, config_path
 
 
+def validate_email_config(config: dict[str, Any]) -> None:
+    email = config["email"]
+    if bool(email["enabled"]):
+        if not str(email["smtp_host"]).strip():
+            raise ValueError("email.smtp_host is required when email.enabled is true")
+        if not 1 <= int(email["smtp_port"]) <= 65535:
+            raise ValueError("email.smtp_port must be between 1 and 65535")
+        if email["security"] not in {"ssl", "starttls"}:
+            raise ValueError("email.security must be ssl or starttls")
+        for field in ("username_env", "password_env", "to_env"):
+            if not str(email[field]).strip():
+                raise ValueError(f"email.{field} is required when email.enabled is true")
+        if float(email["max_attachment_mb"]) <= 0:
+            raise ValueError("email.max_attachment_mb must be greater than zero")
+
+
 def validate_config(config: dict[str, Any], *, require_backend: bool = True) -> None:
     source = config["discovery"]["source"]
     if source not in {"arxiv", "crossref", "openreview", "json"}:
@@ -112,3 +135,4 @@ def validate_config(config: dict[str, Any], *, require_backend: bool = True) -> 
     if require_backend and backend == "openai_compatible":
         if not config["backend"]["base_url"] or not config["backend"]["model"]:
             raise ValueError("backend.base_url and backend.model are required")
+    validate_email_config(config)

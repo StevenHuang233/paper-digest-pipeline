@@ -1,6 +1,6 @@
 ---
 name: daily-paper-digest
-description: "Discover arXiv papers for today or a specified date, retrieve conference papers through Crossref, OpenReview, or a normalized JSON proceedings export, filter them by a user's research preferences, and create budget-controlled six-part paper reviews. Use when Codex is asked for a daily paper feed, conference-paper shortlist, research-interest alert, cheap-API paper digest, scheduled literature scan, or one-to-many review run with either an OpenAI-compatible provider or Codex."
+description: "Discover arXiv papers for today or a specified date, retrieve conference papers through Crossref, OpenReview, or a normalized JSON proceedings export, filter them by a user's research preferences, and create budget-controlled six-part paper reviews with optional scheduled email delivery. Use when Codex is asked for a daily paper feed, conference-paper shortlist, research-interest alert, cheap-API paper digest, GitHub Actions literature scan, email paper alert, or one-to-many review run with either an OpenAI-compatible provider or Codex."
 ---
 
 # Daily Paper Digest
@@ -9,16 +9,16 @@ Run the project pipeline without changing the six-part review semantics. Separat
 
 ## Workflow
 
-1. Locate the project root containing `pyproject.toml` and `config.example.toml`.
-2. Create a user config with `python .agents/skills/daily-paper-digest/scripts/run_digest.py init --output config.toml` when none exists.
-3. Edit only non-secret preferences and provider settings in `config.toml`. Keep API keys in the environment variable named by `backend.api_key_env`.
+1. Locate the project root containing `pyproject.toml` and the single committed `config.toml`.
+2. Edit only non-secret preferences, provider metadata, limits, output, and email settings in `config.toml`. Keep API keys and SMTP credentials in the environment variables named by the config.
+3. Read [references/configuration.md](references/configuration.md) before changing a source, deploying GitHub Actions, or enabling SMTP delivery.
 4. Run a zero-model preview first for a new preference profile:
 
 ```powershell
 python .agents/skills/daily-paper-digest/scripts/run_digest.py run --config config.toml --dry-run
 ```
 
-5. Inspect `selected.json`. Adjust interests, include/exclude keywords, categories, threshold, or Top-K when selection is visibly off.
+5. Inspect `selection-decisions.json` and `selected.json`. Adjust interests, include/exclude keywords, categories, the decision policy, or safety limits when selection is visibly off.
 6. Generate with an inexpensive OpenAI-compatible provider or the current Codex login:
 
 ```powershell
@@ -50,4 +50,4 @@ python .agents/skills/daily-paper-digest/scripts/run_digest.py run --config conf
 
 ## Resume and scheduling
 
-Reuse existing per-paper summary checkpoints unless the user explicitly requests regeneration with `--force`. For schedules, configure the included GitHub workflow or call the same command from cron/Task Scheduler. Never commit `.env`, API keys, or generated private-paper content.
+Reuse existing per-paper summary checkpoints unless the user explicitly requests regeneration with `--force`. For GitHub Actions, keep non-secrets in `config.toml`, put model and SMTP credentials in repository Secrets, and use the included workflow. Treat a `partial` manifest as a failed automation that needs inspection. Send success, partial, and failure notifications without exposing credentials in logs. Never commit `.env`, API keys, SMTP authorization codes, or generated private-paper content.
