@@ -24,7 +24,9 @@ DEFAULTS: dict[str, Any] = {
         "rules_preview_min_score": 0.0,
         "llm_batch_size": 40, "llm_abstract_chars": 1600,
         "llm_max_output_tokens": 4000, "llm_thinking_mode": "disabled",
-        "llm_prioritize": False, "priority_batch_size": 50, "priority_local_buffer_ratio": 1.5,
+        "decision_rounds": 2, "decision_shuffle_seed": "paper-digest-decision-v2",
+        "llm_prioritize": False, "priority_batch_size": 50, "priority_local_buffer_ratio": 1.0,
+        "priority_rounds": 3, "priority_shuffle_seed": "paper-digest-priority-v2",
         "priority_abstract_chars": 1200, "priority_max_output_tokens": 5000,
         "priority_policy": "Prefer the papers that are most useful for the configured research interests.",
         "decision_policy": (
@@ -133,6 +135,10 @@ def validate_config(config: dict[str, Any], *, require_backend: bool = True) -> 
         raise ValueError("selection.llm_batch_size must be >= 1")
     if int(config["selection"]["llm_abstract_chars"]) < 200:
         raise ValueError("selection.llm_abstract_chars must be >= 200")
+    if not 1 <= int(config["selection"]["decision_rounds"]) <= 5:
+        raise ValueError("selection.decision_rounds must be between 1 and 5")
+    if not str(config["selection"]["decision_shuffle_seed"]).strip():
+        raise ValueError("selection.decision_shuffle_seed must not be empty")
     if int(config["selection"]["priority_batch_size"]) < 2:
         raise ValueError("selection.priority_batch_size must be >= 2")
     if not 1.0 <= float(config["selection"]["priority_local_buffer_ratio"]) <= 5.0:
@@ -141,6 +147,10 @@ def validate_config(config: dict[str, Any], *, require_backend: bool = True) -> 
         raise ValueError("selection.priority_abstract_chars must be >= 200")
     if int(config["selection"]["priority_max_output_tokens"]) < 100:
         raise ValueError("selection.priority_max_output_tokens must be >= 100")
+    if not 1 <= int(config["selection"]["priority_rounds"]) <= 10:
+        raise ValueError("selection.priority_rounds must be between 1 and 10")
+    if not str(config["selection"]["priority_shuffle_seed"]).strip():
+        raise ValueError("selection.priority_shuffle_seed must not be empty")
     if config["selection"]["ranker"] not in {"rules", "llm"}:
         raise ValueError("selection.ranker must be rules or llm")
     if config["selection"]["ranker"] == "llm" and not str(config["selection"]["decision_policy"]).strip():

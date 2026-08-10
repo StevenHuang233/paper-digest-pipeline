@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import re
@@ -67,9 +68,10 @@ def _decision_schema() -> dict:
                     "properties": {
                         "id": {"type": "string"},
                         "decision": {"type": "string", "enum": ["include", "exclude"]},
+                        "match_area": {"type": "string"},
                         "reason": {"type": "string"},
                     },
-                    "required": ["id", "decision", "reason"],
+                    "required": ["id", "decision", "match_area", "reason"],
                 },
             }
         },
@@ -96,14 +98,22 @@ def _priority_schema() -> dict:
     }
 
 
-def llm_rerank(
-    papers: list[Paper], preferences: dict, backend, *, batch_size: int = 40,
-    abstract_chars: int = 1600, max_output_tokens: int = 4000,
-    thinking_mode: str = "disabled", decision_policy: str = "", budget=None,
-) -> list[Paper]:
-    """Make one explicit include/exclude decision for every non-excluded paper."""
-    eligible = [(index, paper) for index, paper in enumerate(papers) if paper.selection_decision != "hard_exclude"]
-    results: dict[int, tuple[str, str]] = {}
+def _stable_rotation(items: list, seed: str, round_number: int) -> list:
+    """Return a deterministic shuffle that is stable across Python processes."""
+    def key(item) -> str:
+        record_id, paper = item
+        material = f"{seed}\0{round_number}\0{record_id}\0{paper.id}\0{paper.title}"
+        return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+    return sorted(items, key=key)
+
+
+def _decision_pass(
+    eligible: list[tuple[int, Paper]], preferences: dict, backend, *, batch_size: int,
+    abstract_chars: int, max_output_tokens: int, thinking_mode: str,
+    decision_policy: str, stage: str, budget=None,
+) -> dict[int, tuple[str, str, str]]:
+    results: dict[int, tuple[str, str, str]] = {}
     profile = {
         "research_interests": preferences.get("interests") or [],
         "positive_terms": preferences.get("include_keywords") or [],
@@ -121,12 +131,23 @@ def llm_rerank(
         ]
         prompt = f"""Decide whether to include or exclude every paper for this user's research feed. This is semantic relevance filtering, not keyword counting.
 
-Follow the configured decision policy as the authoritative inclusion rule. Return `include` only when the title and abstract provide concrete evidence that the policy is satisfied. Positive terms are soft hints, never mandatory matches. Return `exclude` for incidental mentions, generic AI relevance, weakly related applications, or insufficient evidence. Resolve borderline cases by asking whether the user would reasonably want to read the full paper under that policy.
+This is {stage}. Follow the configured decision policy as the authoritative boundary. An `include`
+requires the paper's PRIMARY problem, method, dataset, or evaluation contribution to directly satisfy
+one explicit policy area. For every include, return that area's configured label in `match_area` and cite
+concrete title/abstract evidence. If no explicit area is directly satisfied, return `exclude` with
+`match_area` set to `none`. Possible future usefulness, incidental terminology, an off-the-shelf model,
+or a routine domain application is not enough.
 
-Use the same decision boundary across every batch. Do not assign scores, probabilities, confidence values, ranks, or per-batch quotas. Return one item for every supplied id in strict JSON and keep each reason under 20 words.
+Apply hard exclusions before positive rules. Treat generic AI, generic reinforcement learning, generic
+language-agent work, and single-modality applications as excluded unless the configured policy explicitly
+includes them. Read every supplied paper before answering and use the same boundary regardless of batch
+composition or item position.
+
+Do not assign scores, probabilities, confidence values, ranks, or per-batch quotas. Return one item for
+every supplied id in strict JSON and keep each reason under 24 words.
 
 Required JSON example:
-{{"decisions":[{{"id":"p000000","decision":"include","reason":"Primary method directly advances multimodal agent reasoning."}}]}}
+{{"decisions":[{{"id":"p000000","decision":"include","match_area":"B","reason":"Primary method diagnoses missing visual evidence in an MLLM."}},{{"id":"p000001","decision":"exclude","match_area":"none","reason":"Generic control RL without a foundation-model contribution."}}]}}
 
 User profile:
 {json.dumps(profile, ensure_ascii=False)}
@@ -136,7 +157,7 @@ Papers:
         if budget is not None:
             budget.reserve(prompt, max_output_tokens)
         response, _usage = backend.generate_json(
-            "You are a strict academic-paper relevance gate. Output JSON only.",
+            "You are a strict and position-invariant academic-paper relevance gate. Output JSON only.",
             prompt, max_output_tokens=max_output_tokens, schema=_decision_schema(), thinking_mode=thinking_mode,
         )
         expected = {f"p{index:06d}": index for index, _paper in batch}
@@ -148,22 +169,80 @@ Papers:
             decision = str(item.get("decision") or "").strip().lower()
             if decision not in {"include", "exclude"}:
                 continue
+            match_area = " ".join(str(item.get("match_area") or "none").split())
             reason = " ".join(str(item.get("reason") or "LLM binary relevance decision").split())
-            results[expected[record_id]] = (decision, reason)
+            if decision == "include" and match_area.lower() in {"", "none", "n/a", "na", "unmatched"}:
+                decision = "exclude"
+                match_area = "none"
+                reason = "No explicit configured policy area was identified."
+            elif decision == "exclude":
+                match_area = "none"
+            results[expected[record_id]] = (decision, match_area, reason)
             seen.add(record_id)
         missing = sorted(set(expected) - seen)
         if missing:
             raise RuntimeError(f"LLM ranking response omitted {len(missing)} of {len(expected)} papers in a batch")
+    return results
+
+
+def llm_rerank(
+    papers: list[Paper], preferences: dict, backend, *, batch_size: int = 40,
+    abstract_chars: int = 1600, max_output_tokens: int = 4000,
+    thinking_mode: str = "disabled", decision_policy: str = "",
+    decision_rounds: int = 1, decision_shuffle_seed: str = "paper-digest-decision-v2",
+    budget=None,
+) -> list[Paper]:
+    """Make explicit decisions, rotating batches and adjudicating disagreements."""
+    if decision_rounds < 1:
+        raise ValueError("decision_rounds must be at least 1")
+    eligible = [(index, paper) for index, paper in enumerate(papers) if paper.selection_decision != "hard_exclude"]
+    round_results: list[dict[int, tuple[str, str, str]]] = []
+    indexed = [(f"p{index:06d}", paper) for index, paper in eligible]
+    for round_number in range(decision_rounds):
+        rotated = _stable_rotation(indexed, decision_shuffle_seed, round_number)
+        rotated_eligible = [(int(record_id[1:]), paper) for record_id, paper in rotated]
+        round_results.append(_decision_pass(
+            rotated_eligible, preferences, backend, batch_size=batch_size,
+            abstract_chars=abstract_chars, max_output_tokens=max_output_tokens,
+            thinking_mode=thinking_mode, decision_policy=decision_policy,
+            stage=f"independent decision pass {round_number + 1}/{decision_rounds}", budget=budget,
+        ))
+
+    disagreements: list[tuple[int, Paper]] = []
+    for index, paper in eligible:
+        votes = [result[index][0] for result in round_results]
+        if len(set(votes)) > 1:
+            disagreements.append((index, paper))
+    adjudicated: dict[int, tuple[str, str, str]] = {}
+    if disagreements:
+        rotated_disagreements = _stable_rotation(
+            [(f"p{index:06d}", paper) for index, paper in disagreements],
+            f"{decision_shuffle_seed}-adjudication", 0,
+        )
+        adjudicated = _decision_pass(
+            [(int(record_id[1:]), paper) for record_id, paper in rotated_disagreements],
+            preferences, backend, batch_size=batch_size, abstract_chars=abstract_chars,
+            max_output_tokens=max_output_tokens, thinking_mode=thinking_mode,
+            decision_policy=decision_policy,
+            stage="final adjudication for papers with conflicting independent decisions", budget=budget,
+        )
 
     reranked: list[Paper] = []
     for index, paper in enumerate(papers):
         if paper.selection_decision == "hard_exclude":
             reranked.append(paper)
             continue
-        decision, reason = results[index]
+        votes = [result[index][0] for result in round_results]
+        if index in adjudicated:
+            decision, match_area, reason = adjudicated[index]
+            audit = f"adjudicated after {votes.count('include')}/{decision_rounds} include votes"
+        else:
+            decision, match_area, reason = round_results[0][index]
+            audit = f"{decision_rounds}/{decision_rounds} consistent"
         reranked.append(replace(
-            paper, score=0.0, score_reasons=[f"LLM {decision}: {reason}"],
-            selection_decision=decision, selection_scores={},
+            paper, score=0.0, score_reasons=[f"LLM {decision} [{match_area}] ({audit}): {reason}"],
+            selection_decision=decision,
+            selection_scores={"include_votes": votes.count("include"), "decision_rounds": decision_rounds},
         ))
     return reranked
 
@@ -222,46 +301,65 @@ Papers:
 
 def llm_prioritize(
     papers: list[Paper], backend, *, max_papers: int, batch_size: int = 50,
-    local_buffer_ratio: float = 1.5,
+    local_buffer_ratio: float = 1.0, rounds: int = 3,
+    shuffle_seed: str = "paper-digest-priority-v2",
     abstract_chars: int = 1200, max_output_tokens: int = 5000,
     thinking_mode: str = "disabled", priority_policy: str = "", budget=None,
 ) -> list[Paper]:
     """Choose an ordered top-N shortlist without assigning numeric relevance scores."""
     if max_papers < 1:
         raise ValueError("max_papers must be at least 1")
+    if rounds < 1:
+        raise ValueError("rounds must be at least 1")
     if len(papers) <= max_papers:
         return papers
 
     indexed = [(f"p{index:06d}", paper) for index, paper in enumerate(papers)]
     paper_by_id = dict(indexed)
-    pool: list[tuple[str, Paper]] = []
     total = len(indexed)
-    for start in range(0, total, batch_size):
-        batch = indexed[start : start + batch_size]
-        proportional_quota = math.ceil(max_papers * len(batch) / total)
-        # A configurable buffer reduces early batch-allocation bias before the global pass.
-        local_quota = min(len(batch), max(1, math.ceil(proportional_quota * local_buffer_ratio)))
-        local = _priority_request(
-            batch, backend, quota=local_quota, abstract_chars=abstract_chars,
-            max_output_tokens=max_output_tokens, thinking_mode=thinking_mode,
-            priority_policy=priority_policy, stage="local", budget=budget,
-        )
-        pool.extend((record_id, paper_by_id[record_id]) for record_id, _reason in local)
+    wins = {record_id: 0 for record_id, _paper in indexed}
+    rank_cost = {record_id: 0.0 for record_id, _paper in indexed}
+    best_reason: dict[str, str] = {}
+    for round_number in range(rounds):
+        rotated = _stable_rotation(indexed, shuffle_seed, round_number)
+        for start in range(0, total, batch_size):
+            batch = rotated[start : start + batch_size]
+            proportional_quota = math.ceil(max_papers * len(batch) / total)
+            local_quota = min(len(batch), max(1, math.ceil(proportional_quota * local_buffer_ratio)))
+            local = _priority_request(
+                batch, backend, quota=local_quota, abstract_chars=abstract_chars,
+                max_output_tokens=max_output_tokens, thinking_mode=thinking_mode,
+                priority_policy=priority_policy,
+                stage=f"rotating panel {round_number + 1}/{rounds}", budget=budget,
+            )
+            positions = {record_id: position for position, (record_id, _reason) in enumerate(local, start=1)}
+            reasons = dict(local)
+            for record_id, _paper in batch:
+                if record_id in positions:
+                    wins[record_id] += 1
+                    rank_cost[record_id] += positions[record_id] / local_quota
+                    best_reason.setdefault(record_id, reasons[record_id])
+                else:
+                    # A fixed loss penalty is comparable across differently sized panels.
+                    rank_cost[record_id] += 2.0
 
-    if len(pool) > max_papers:
-        final = _priority_request(
-            pool, backend, quota=max_papers, abstract_chars=abstract_chars,
-            max_output_tokens=max_output_tokens, thinking_mode=thinking_mode,
-            priority_policy=priority_policy, stage="global", budget=budget,
-        )
-    else:
-        final = [(record_id, "Selected by local priority shortlist") for record_id, _paper in pool]
+    final_ids = sorted(
+        paper_by_id,
+        key=lambda record_id: (
+            -wins[record_id], rank_cost[record_id],
+            hashlib.sha256(f"{shuffle_seed}\0final\0{record_id}".encode("utf-8")).hexdigest(),
+        ),
+    )[:max_papers]
 
     result: list[Paper] = []
-    for rank, (record_id, reason) in enumerate(final, start=1):
+    for rank, record_id in enumerate(final_ids, start=1):
         paper = paper_by_id[record_id]
+        reason = best_reason.get(record_id, "Advanced through the rotating comparison panels.")
         result.append(replace(
             paper,
-            score_reasons=[*paper.score_reasons, f"LLM priority #{rank}: {reason}"],
+            score_reasons=[
+                *paper.score_reasons,
+                f"LLM priority #{rank} ({wins[record_id]}/{rounds} panels): {reason}",
+            ],
         ))
     return result

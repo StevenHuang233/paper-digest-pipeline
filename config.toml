@@ -56,9 +56,13 @@ llm_batch_size = 40                    # 每次筛选请求包含的论文数
 llm_abstract_chars = 1600              # 每篇送入筛选模型的摘要字符上限
 llm_max_output_tokens = 4000           # 每批二元决策的最大输出 token
 llm_thinking_mode = "disabled"         # 筛选阶段关闭思考模式以降低成本
-# 这是筛选的最终判定边界。模型对每篇论文只返回 include 或 exclude，不进行分数排序。
+decision_rounds = 2                     # 独立判断轮数；出现分歧时自动追加最终裁决
+decision_shuffle_seed = "paper-digest-decision-v2" # 稳定乱序，避免批次与原始位置影响结论
+# 这是筛选的最终判定边界。模型返回 include/exclude、命中类别和证据，不进行分数排序。
 decision_policy = """
-Include a paper when either condition A or condition B is satisfied.
+Include a paper only when either condition A or condition B is directly satisfied by its primary
+contribution. For every include, return the single strongest matching label A or B. If neither label can
+be justified from the title and abstract, exclude the paper even if it may be broadly useful.
 
 A. Its primary contribution studies genuinely multimodal learning involving at least two distinct
 modalities or signal types, such as image/video, text, audio, touch, or action. This includes VLM/MLLM,
@@ -73,13 +77,16 @@ as multimodal OPD. OPD relevance alone is sufficient for inclusion.
 Exclude pure single-modality image/video generation, coding, reconstruction, segmentation, enhancement,
 or multi-view vision unless language, audio, touch, action, or another distinct modality is central to the
 method. Also exclude incidental multimodal mentions, unrelated applications that merely call a foundation
-model, and papers without enough title/abstract evidence. Apply these rules consistently across batches.
+model, and papers without enough title/abstract evidence. A reusable-sounding idea is not sufficient
+unless the paper itself directly studies A or B. Apply these rules consistently across batches.
 """
 
 # 可选的第二阶段价值精选。关闭时仍会严格按 max_selected_papers 截断；开启时由 LLM 比较后保留上限内最值得读的论文。
 llm_prioritize = false
 priority_batch_size = 50               # 局部比较的论文数
-priority_local_buffer_ratio = 1.5       # 局部短名单缓冲倍率；越高越稳健，但全局比较成本越高
+priority_local_buffer_ratio = 1.0       # 每个轮换面板按全局保留比例晋级；建议保持 1.0
+priority_rounds = 3                     # 使用不同顺序和对手组合进行三轮比较
+priority_shuffle_seed = "paper-digest-priority-v2" # 稳定轮换种子，避免原始顺序偏差
 priority_abstract_chars = 1200          # 每篇送入精选模型的摘要字符上限
 priority_max_output_tokens = 5000       # 每次精选请求的最大输出 token
 priority_policy = """

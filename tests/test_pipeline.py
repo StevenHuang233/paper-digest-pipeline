@@ -75,6 +75,7 @@ class SelectionTests(unittest.TestCase):
                 self.prompt = prompt
                 return {"decisions": [{
                     "id": "p000001", "decision": "include",
+                    "match_area": "A",
                     "reason": "Direct graph-agent alignment.",
                 }]}, {}
 
@@ -99,6 +100,7 @@ class SelectionTests(unittest.TestCase):
                 batch = json.loads(prompt.rsplit("Papers:\n", 1)[1])
                 return {"decisions": [{
                     "id": item["id"], "decision": "include",
+                    "match_area": "A",
                     "reason": "Relevant graph-agent paper.",
                 } for item in batch]}, {}
 
@@ -109,6 +111,7 @@ class SelectionTests(unittest.TestCase):
                 "ranker": "llm", "min_score": 0.0, "max_selected_papers": 500,
                 "llm_batch_size": 40, "llm_abstract_chars": 1600,
                 "llm_max_output_tokens": 4000, "llm_thinking_mode": "disabled",
+                "decision_rounds": 1,
             },
             "backend": {},
         }
@@ -123,7 +126,7 @@ class SelectionTests(unittest.TestCase):
         class IncompleteRanker:
             def generate_json(self, system, prompt, **kwargs):
                 return {"decisions": [{
-                    "id": "p000000", "decision": "exclude", "reason": "Not relevant.",
+                    "id": "p000000", "decision": "exclude", "match_area": "none", "reason": "Not relevant.",
                 }]}, {}
 
         with self.assertRaisesRegex(RuntimeError, "omitted 1 of 2"):
@@ -136,7 +139,7 @@ class SelectionTests(unittest.TestCase):
             def generate_json(self, system, prompt, **kwargs):
                 compact = json.loads(prompt.rsplit("Papers:\n", 1)[1])
                 return {"decisions": [
-                    {"id": item["id"], "decision": "include", "reason": "Relevant."}
+                    {"id": item["id"], "decision": "include", "match_area": "A", "reason": "Relevant."}
                     for item in compact
                 ]}, {}
 
@@ -153,7 +156,7 @@ class SelectionTests(unittest.TestCase):
         selected = rank_and_select(config, papers, backend=IncludeAllBackend())
         self.assertEqual([paper.id for paper in selected], ["paper-0", "paper-1", "paper-2"])
 
-    def test_llm_priority_uses_local_then_global_shortlists_without_scores(self):
+    def test_llm_priority_uses_rotating_panels_without_model_scores(self):
         papers = [
             Paper(id=f"paper-{index}", title=f"Multimodal Method {index}", abstract="Detailed method and experiments.")
             for index in range(120)
@@ -179,9 +182,9 @@ class SelectionTests(unittest.TestCase):
             priority_policy="Prefer high-value multimodal methods.",
         )
         self.assertEqual(len(selected), 50)
-        self.assertEqual(backend.calls, 4)
+        self.assertEqual(backend.calls, 9)
         self.assertTrue(all("Do not output scores" in prompt for prompt in backend.prompts))
-        self.assertTrue(selected[0].score_reasons[-1].startswith("LLM priority #1:"))
+        self.assertTrue(selected[0].score_reasons[-1].startswith("LLM priority #1 ("))
 
     def test_llm_priority_rejects_wrong_shortlist_size(self):
         papers = [Paper(id=f"p{index}", title=f"Paper {index}") for index in range(3)]
@@ -192,6 +195,62 @@ class SelectionTests(unittest.TestCase):
 
         with self.assertRaisesRegex(RuntimeError, "expected exactly"):
             llm_prioritize(papers, IncompletePriorityBackend(), max_papers=2, batch_size=3)
+
+    def test_rotating_priority_panels_do_not_starve_the_source_tail(self):
+        papers = [
+            Paper(id=f"paper-{index}", title=f"Multimodal Method {index}", abstract="Relevant method.")
+            for index in range(64)
+        ]
+
+        class PositionBiasedBackend:
+            def generate_json(self, system, prompt, **kwargs):
+                compact = json.loads(prompt.rsplit("Papers:\n", 1)[1])
+                quota = int(prompt.split("Return exactly ", 1)[1].split(" unique papers", 1)[0])
+                return {"shortlist": [
+                    {"id": item["id"], "reason": "Preferred within this panel."}
+                    for item in compact[:quota]
+                ]}, {}
+
+        selected = llm_prioritize(
+            papers, PositionBiasedBackend(), max_papers=50, batch_size=50,
+            rounds=3, shuffle_seed="tail-bias-regression",
+        )
+        selected_ids = {paper.id for paper in selected}
+        self.assertEqual(len(selected_ids), 50)
+        self.assertTrue(any(f"paper-{index}" in selected_ids for index in range(50, 64)))
+        self.assertNotEqual(selected_ids, {f"paper-{index}" for index in range(50)})
+
+    def test_conflicting_binary_rounds_receive_final_adjudication(self):
+        papers = [
+            Paper(id="target", title="Multimodal Evidence Method", abstract="Diagnoses visual evidence failures."),
+            Paper(id="other", title="Unrelated Paper", abstract="Generic application."),
+        ]
+
+        class DisagreeingBackend:
+            calls = 0
+
+            def generate_json(self, system, prompt, **kwargs):
+                self.calls += 1
+                compact = json.loads(prompt.rsplit("Papers:\n", 1)[1])
+                target_decision = "include" if "pass 1/2" in prompt or "final adjudication" in prompt else "exclude"
+                return {"decisions": [{
+                    "id": item["id"],
+                    "decision": target_decision if item["id"] == "p000000" else "exclude",
+                    "match_area": "B" if item["id"] == "p000000" and target_decision == "include" else "none",
+                    "reason": "Direct visual-evidence method." if item["id"] == "p000000" else "Outside policy.",
+                } for item in compact]}, {}
+
+        backend = DisagreeingBackend()
+        ranked = llm_rerank(
+            papers, {"interests": ["visual evidence"]}, backend,
+            decision_policy="B. Visual evidence methods.", decision_rounds=2,
+            decision_shuffle_seed="decision-regression",
+        )
+        target = next(paper for paper in ranked if paper.id == "target")
+        self.assertEqual(backend.calls, 3)
+        self.assertEqual(target.selection_decision, "include")
+        self.assertEqual(target.selection_scores, {"include_votes": 1, "decision_rounds": 2})
+        self.assertIn("adjudicated", target.score_reasons[0])
 
     def test_rank_and_select_applies_configured_priority_shortlist(self):
         papers = [
@@ -204,7 +263,7 @@ class SelectionTests(unittest.TestCase):
                 compact = json.loads(prompt.rsplit("Papers:\n", 1)[1])
                 if "Decide whether to include" in prompt:
                     return {"decisions": [
-                        {"id": item["id"], "decision": "include", "reason": "Relevant multimodal method."}
+                        {"id": item["id"], "decision": "include", "match_area": "A", "reason": "Relevant multimodal method."}
                         for item in compact
                     ]}, {}
                 quota = int(prompt.split("Return exactly ", 1)[1].split(" unique papers", 1)[0])

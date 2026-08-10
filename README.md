@@ -6,9 +6,10 @@
 
 ## 核心信息流
 
-`论文源 → 最多 N 篇候选 → 硬排除词 → LLM 分批二元判断 → 可选的 LLM 二阶段价值精选 → 最多保留 K 篇 → 最多 M 篇全文总结 → Markdown/LaTeX/PDF → 邮件`
+`论文源 → 最多 N 篇候选 → 硬排除词 → 多轮乱序二元判断 → 分歧裁决 → 可选的轮换面板价值精选 → 最多保留 K 篇 → 最多 M 篇全文总结 → Markdown/LaTeX/PDF → 邮件`
 
-- 两个阶段都不使用数值分数。`selection.decision_policy` 先要求模型逐篇返回 `include/exclude`；启用 `selection.llm_prioritize` 后，`selection.priority_policy` 再让模型输出有序短名单。
+- 两个阶段都不要求模型输出数值分数。`selection.decision_policy` 要求逐篇返回 `include/exclude`、明确命中的政策类别和证据；多轮结果不一致时自动追加裁决。
+- 启用 `selection.llm_prioritize` 后，同一论文会在不同顺序和对手组合中参加多轮小面板比较，避免一次超长请求忽略尾部论文。
 - 关闭二阶段精选时，`selection.max_selected_papers` 仍会严格限制保留数量，只是按论文源原始顺序截断。
 - `discovery.max_candidates`、`selection.max_selected_papers` 和 `review.max_papers` 相互独立；可以精选 50 篇但只全文总结前 10 篇。
 - 全文总结默认读取 PDF，并在附录、补充材料、致谢或参考文献前停止；无法取得全文时会明确标为摘要证据。
@@ -45,9 +46,13 @@ paper-digest run --config config.toml --dry-run
 ```toml
 [selection]
 max_selected_papers = 50
+decision_rounds = 2
+decision_shuffle_seed = "paper-digest-decision-v2"
 llm_prioritize = true                 # false：按原始顺序截断；true：让 LLM 比较后精选
 priority_batch_size = 50
-priority_local_buffer_ratio = 1.5
+priority_local_buffer_ratio = 1.0
+priority_rounds = 3
+priority_shuffle_seed = "paper-digest-priority-v2"
 priority_abstract_chars = 1200
 priority_max_output_tokens = 5000
 priority_policy = """
@@ -92,9 +97,13 @@ priority_policy = """
 | `selection.max_selected_papers` | 最终最多保留数 | 无论是否启用二阶段精选都会生效 |
 | `selection.llm_batch_size` | 单次筛选请求论文数 | 40 是成本、输出长度和稳定性的折中值 |
 | `selection.decision_policy` | include/exclude 的最终边界 | 明确“哪些必须收、哪些必须排”，不要写模糊打分要求 |
+| `selection.decision_rounds` | 独立相关性判断轮数 | 默认 2；两轮冲突的论文会自动进入最终裁决 |
+| `selection.decision_shuffle_seed` | 二元判断的稳定乱序种子 | 改变种子可改变批次组合；同一配置可复现 |
 | `selection.llm_prioritize` | 是否启用二阶段精选 | `false` 直接截断；`true` 比较候选并返回有序短名单 |
-| `selection.priority_batch_size` | 局部精选批量 | 默认 50 |
-| `selection.priority_local_buffer_ratio` | 局部短名单缓冲倍率 | 默认 1.5；越高越稳健，但全局比较成本越高 |
+| `selection.priority_batch_size` | 每个轮换比较面板的论文数 | 默认 50；小模型可降到 25–40 |
+| `selection.priority_local_buffer_ratio` | 每个面板的晋级缓冲倍率 | 推荐 1.0；大于 1 会增加晋级重叠与调用成本 |
+| `selection.priority_rounds` | 轮换面板比较轮数 | 默认 3；轮数越多，位置偏差越低，调用次数越多 |
+| `selection.priority_shuffle_seed` | 精选轮换的稳定种子 | 保证可复现，同时打散论文源顺序 |
 | `selection.priority_policy` | 二阶段价值判断逻辑 | 可按研究契合度、新颖性、实验质量和多样性自由配置 |
 | `review.max_papers` | 每日做全文总结的数量 | 初次部署先设 1，稳定后改为 10 或所需数量 |
 | `backend.base_url/model` | 模型接口和模型名 | DeepSeek 示例已配置；换服务商时一并修改 |
@@ -109,7 +118,7 @@ priority_policy = """
 | `email.smtp_host/port/security` | SMTP 手动覆盖 | 三种内置服务商保持空值、`0`、`auto`；只有自定义邮箱才需要填写 |
 | `email.max_attachment_mb` | 单个附件大小上限 | 常见邮箱用 20 MB 较稳妥；超限文件仍可从 Artifact 下载 |
 
-`decision_policy` 决定相关性边界；`priority_policy` 决定相关论文之间的价值取舍。二阶段精选仅在相关论文超过 `max_selected_papers` 时调用：模型先从各批次保留带缓冲的候选，再进行一次全局比较。两阶段都不输出数值分数。
+`decision_policy` 决定相关性边界；`priority_policy` 决定相关论文之间的价值取舍。第一阶段在稳定乱序的不同批次中独立判断，冲突样本再裁决；第二阶段仅在相关论文超过 `max_selected_papers` 时调用，通过多轮轮换面板汇总晋级结果，不再把全部摘要塞进一次全局请求。模型始终只做明确判断和有序短名单，不输出数值分数。
 
 ### 2. 添加 GitHub Secrets
 

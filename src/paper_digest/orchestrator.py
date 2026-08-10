@@ -74,6 +74,8 @@ def rank_and_select(
             max_output_tokens=int(config["selection"]["llm_max_output_tokens"]),
             thinking_mode=str(config["selection"]["llm_thinking_mode"]),
             decision_policy=str(config["selection"].get("decision_policy") or ""),
+            decision_rounds=int(config["selection"].get("decision_rounds", 2)),
+            decision_shuffle_seed=str(config["selection"].get("decision_shuffle_seed") or "paper-digest-decision-v2"),
             budget=budget,
         )
         selected = [paper for paper in ranked if paper.selection_decision == "include"]
@@ -82,7 +84,9 @@ def rank_and_select(
             selected = llm_prioritize(
                 selected, backend, max_papers=selected_limit,
                 batch_size=int(config["selection"].get("priority_batch_size", 50)),
-                local_buffer_ratio=float(config["selection"].get("priority_local_buffer_ratio", 1.5)),
+                local_buffer_ratio=float(config["selection"].get("priority_local_buffer_ratio", 1.0)),
+                rounds=int(config["selection"].get("priority_rounds", 3)),
+                shuffle_seed=str(config["selection"].get("priority_shuffle_seed") or "paper-digest-priority-v2"),
                 abstract_chars=int(config["selection"].get("priority_abstract_chars", 1200)),
                 max_output_tokens=int(config["selection"].get("priority_max_output_tokens", 5000)),
                 thinking_mode=str(config["selection"].get("llm_thinking_mode", "disabled")),
@@ -110,7 +114,7 @@ def _validate_review(value: dict, evidence_level: str) -> SixPartReview:
 def _selection_fingerprint(config: dict, papers: list[Paper], effective_ranker: str) -> str:
     value = {
         "preferences": config["preferences"], "selection": config["selection"],
-        "effective_ranker": effective_ranker, "selection_logic_version": "llm-binary-priority-v2",
+        "effective_ranker": effective_ranker, "selection_logic_version": "llm-consensus-rotating-panels-v3",
         "papers": [(paper.source, paper.id, paper.title, paper.abstract) for paper in papers],
     }
     return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
