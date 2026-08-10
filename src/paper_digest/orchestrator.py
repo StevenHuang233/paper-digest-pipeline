@@ -6,7 +6,7 @@ from pathlib import Path
 
 from .backends import REVIEW_SCHEMA, make_backend
 from .budget import from_config
-from .filtering import llm_rerank, rule_rank
+from .filtering import llm_prioritize, llm_rerank, rule_rank
 from .fulltext import download_and_extract, safe_name
 from .models import Paper, SixPartReview
 from .outputs import write_outputs
@@ -77,6 +77,18 @@ def rank_and_select(
             budget=budget,
         )
         selected = [paper for paper in ranked if paper.selection_decision == "include"]
+        selected_limit = int(config["selection"]["max_selected_papers"])
+        if bool(config["selection"].get("llm_prioritize", False)) and len(selected) > selected_limit:
+            selected = llm_prioritize(
+                selected, backend, max_papers=selected_limit,
+                batch_size=int(config["selection"].get("priority_batch_size", 50)),
+                local_buffer_ratio=float(config["selection"].get("priority_local_buffer_ratio", 1.5)),
+                abstract_chars=int(config["selection"].get("priority_abstract_chars", 1200)),
+                max_output_tokens=int(config["selection"].get("priority_max_output_tokens", 5000)),
+                thinking_mode=str(config["selection"].get("llm_thinking_mode", "disabled")),
+                priority_policy=str(config["selection"].get("priority_policy") or ""),
+                budget=budget,
+            )
     else:
         threshold = float(config["selection"]["min_score"] if min_score_override is None else min_score_override)
         selected = [paper for paper in ranked if paper.score >= threshold]
@@ -98,7 +110,7 @@ def _validate_review(value: dict, evidence_level: str) -> SixPartReview:
 def _selection_fingerprint(config: dict, papers: list[Paper], effective_ranker: str) -> str:
     value = {
         "preferences": config["preferences"], "selection": config["selection"],
-        "effective_ranker": effective_ranker, "selection_logic_version": "llm-binary-v1",
+        "effective_ranker": effective_ranker, "selection_logic_version": "llm-binary-priority-v2",
         "papers": [(paper.source, paper.id, paper.title, paper.abstract) for paper in papers],
     }
     return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()

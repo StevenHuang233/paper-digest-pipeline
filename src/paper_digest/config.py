@@ -24,6 +24,9 @@ DEFAULTS: dict[str, Any] = {
         "rules_preview_min_score": 0.0,
         "llm_batch_size": 40, "llm_abstract_chars": 1600,
         "llm_max_output_tokens": 4000, "llm_thinking_mode": "disabled",
+        "llm_prioritize": False, "priority_batch_size": 50, "priority_local_buffer_ratio": 1.5,
+        "priority_abstract_chars": 1200, "priority_max_output_tokens": 5000,
+        "priority_policy": "Prefer the papers that are most useful for the configured research interests.",
         "decision_policy": (
             "Include only papers whose primary problem, method, or contribution directly matches at least one "
             "research interest. Exclude incidental mentions, generic AI relevance, and insufficient evidence."
@@ -45,8 +48,9 @@ DEFAULTS: dict[str, Any] = {
         "enabled": False, "provider": "auto", "smtp_host": "", "smtp_port": 0, "security": "auto",
         "subject_prefix": "[Paper Digest]", "username_env": "PAPER_DIGEST_SMTP_USERNAME",
         "password_env": "PAPER_DIGEST_SMTP_PASSWORD", "to_env": "PAPER_DIGEST_EMAIL_TO",
-        "from_env": "PAPER_DIGEST_EMAIL_FROM", "attach_pdf": True, "attach_markdown": True,
-        "attach_log_on_failure": True, "max_attachment_mb": 20, "timeout_seconds": 60,
+        "from_env": "PAPER_DIGEST_EMAIL_FROM", "attach_pdf": True, "attach_markdown": False,
+        "require_pdf_attachment": True, "attach_log_on_failure": True,
+        "max_attachment_mb": 20, "timeout_seconds": 60,
     },
 }
 
@@ -105,6 +109,8 @@ def validate_email_config(config: dict[str, Any]) -> None:
                 raise ValueError(f"email.{field} is required when email.enabled is true")
         if float(email["max_attachment_mb"]) <= 0:
             raise ValueError("email.max_attachment_mb must be greater than zero")
+        if bool(email["require_pdf_attachment"]) and not bool(email["attach_pdf"]):
+            raise ValueError("email.attach_pdf must be true when require_pdf_attachment is enabled")
 
 
 def validate_config(config: dict[str, Any], *, require_backend: bool = True) -> None:
@@ -127,10 +133,20 @@ def validate_config(config: dict[str, Any], *, require_backend: bool = True) -> 
         raise ValueError("selection.llm_batch_size must be >= 1")
     if int(config["selection"]["llm_abstract_chars"]) < 200:
         raise ValueError("selection.llm_abstract_chars must be >= 200")
+    if int(config["selection"]["priority_batch_size"]) < 2:
+        raise ValueError("selection.priority_batch_size must be >= 2")
+    if not 1.0 <= float(config["selection"]["priority_local_buffer_ratio"]) <= 5.0:
+        raise ValueError("selection.priority_local_buffer_ratio must be between 1.0 and 5.0")
+    if int(config["selection"]["priority_abstract_chars"]) < 200:
+        raise ValueError("selection.priority_abstract_chars must be >= 200")
+    if int(config["selection"]["priority_max_output_tokens"]) < 100:
+        raise ValueError("selection.priority_max_output_tokens must be >= 100")
     if config["selection"]["ranker"] not in {"rules", "llm"}:
         raise ValueError("selection.ranker must be rules or llm")
     if config["selection"]["ranker"] == "llm" and not str(config["selection"]["decision_policy"]).strip():
         raise ValueError("selection.decision_policy is required for llm selection")
+    if bool(config["selection"]["llm_prioritize"]) and not str(config["selection"]["priority_policy"]).strip():
+        raise ValueError("selection.priority_policy is required when llm_prioritize is enabled")
     if not 0.0 <= float(config["selection"]["min_score"]) <= 1.0:
         raise ValueError("selection.min_score must be between 0 and 1")
     if int(config["selection"]["max_selected_papers"]) > int(config["discovery"]["max_candidates"]):

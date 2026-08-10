@@ -151,6 +151,15 @@ def build_message(
     max_bytes = int(float(settings["max_attachment_mb"]) * 1024 * 1024)
     attachments: list[Path] = []
     outputs = result.get("outputs") or {}
+    if status == "success" and bool(settings.get("require_pdf_attachment")):
+        pdf_value = str(outputs.get("pdf") or "").strip()
+        pdf_path = Path(pdf_value) if pdf_value else None
+        if pdf_path is None or not pdf_path.is_file():
+            raise RuntimeError("Successful digest email requires digest.pdf, but no compiled PDF was produced")
+        if pdf_path.stat().st_size > max_bytes:
+            raise RuntimeError(
+                f"Successful digest email requires digest.pdf, but it exceeds email.max_attachment_mb={settings['max_attachment_mb']}"
+            )
     if bool(settings.get("attach_pdf")) and outputs.get("pdf"):
         attachments.append(Path(outputs["pdf"]))
     if bool(settings.get("attach_markdown")) and outputs.get("markdown"):

@@ -76,6 +76,18 @@ method. Also exclude incidental multimodal mentions, unrelated applications that
 model, and papers without enough title/abstract evidence. Apply these rules consistently across batches.
 """
 
+# 可选的第二阶段价值精选。关闭时仍会严格按 max_selected_papers 截断；开启时由 LLM 比较后保留上限内最值得读的论文。
+llm_prioritize = false
+priority_batch_size = 50               # 局部比较的论文数
+priority_local_buffer_ratio = 1.5       # 局部短名单缓冲倍率；越高越稳健，但全局比较成本越高
+priority_abstract_chars = 1200          # 每篇送入精选模型的摘要字符上限
+priority_max_output_tokens = 5000       # 每次精选请求的最大输出 token
+priority_policy = """
+Prioritize papers by fit to the configured interests, methodological novelty, technical depth,
+experimental credibility, and usefulness for developing new research ideas. Preserve topic diversity
+and avoid filling the shortlist with near-duplicate papers. Do not assign numeric scores.
+"""
+
 [review]
 max_papers = 10                       # 每次做 PDF 全文六段式总结的上限；设为 500 可总结全部入选论文
 
@@ -121,7 +133,8 @@ password_env = "PAPER_DIGEST_SMTP_PASSWORD" # 邮箱 SMTP 授权码，不是网�
 to_env = "PAPER_DIGEST_EMAIL_TO"           # 收件人；多个地址可用英文逗号分隔
 from_env = "PAPER_DIGEST_EMAIL_FROM"        # 可选；未设置时使用发件邮箱
 attach_pdf = true
-attach_markdown = true
+attach_markdown = false                  # 邮件只发送 PDF；Markdown 仍保存在 Actions Artifact
+require_pdf_attachment = true            # 成功邮件必须包含 PDF，否则任务明确失败
 attach_log_on_failure = true
 max_attachment_mb = 20                # 单个附件上限，避免被邮箱服务器拒收
 timeout_seconds = 60

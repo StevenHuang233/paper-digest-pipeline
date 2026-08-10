@@ -60,7 +60,9 @@ def _latex_math(text: str) -> str:
     return "".join(replacements.get(char, char) for char in text)
 
 
-def latex_escape(text: str) -> str:
+def latex_escape(text: str, preserve_math: bool = True) -> str:
+    if not preserve_math:
+        return _latex_plain(text)
     # Preserve genuine math spans, but treat currency pairs containing prose as
     # literal dollars rather than opening and closing math mode.
     parts = re.split(r"(\$[^$]+\$|\\\(.+?\\\)|\\\[.+?\\\])", text, flags=re.S)
@@ -79,7 +81,7 @@ def latex_escape(text: str) -> str:
     return "".join(rendered)
 
 
-def render_latex(records: list[dict]) -> str:
+def render_latex(records: list[dict], preserve_math: bool = True) -> str:
     evidence_labels = {
         "fulltext": "全文：已读取正文至附录或参考文献前",
         "abstract": "摘要：仅依据可靠摘要",
@@ -92,7 +94,7 @@ def render_latex(records: list[dict]) -> str:
     body: list[str] = []
     for record in records:
         paper, review = record["paper"], record["review"]
-        title = latex_escape(paper["title"])
+        title = latex_escape(paper["title"], preserve_math=preserve_math)
         title = title.replace(r"$\beta$", r"\texorpdfstring{$\beta$}{beta}")
         url = paper.get("url") or paper.get("pdf_url") or ""
         authors = ", ".join(paper.get("authors") or [])
@@ -127,10 +129,10 @@ def render_latex(records: list[dict]) -> str:
         }
         for key, _ in SECTIONS:
             body.append(f"\\parthead{{{latex_escape(display_labels[key])}}}")
-            body.append(latex_escape(review.get(key, "").strip()))
+            body.append(latex_escape(review.get(key, "").strip(), preserve_math=preserve_math))
         if review.get("limitations"):
             body.append("\\parthead{证据与局限}")
-            body.append(latex_escape(review["limitations"].strip()))
+            body.append(latex_escape(review["limitations"].strip(), preserve_math=preserve_math))
     preamble = rf"""\documentclass[11pt,UTF8,a4paper]{{ctexart}}
 \usepackage[margin=24mm,headheight=22pt]{{geometry}}
 \usepackage{{amsmath,amssymb,booktabs,longtable,microtype,xurl}}
@@ -213,6 +215,24 @@ def render_latex(records: list[dict]) -> str:
     return preamble + "\n\n".join(body) + "\n\\end{document}\n"
 
 
+def _compile_latex(engine: str, tex_path: Path, run_dir: Path) -> tuple[bool, str]:
+    logs: list[str] = []
+    for pass_number in range(1, 3):
+        completed = subprocess.run(
+            [engine, "-interaction=nonstopmode", "-halt-on-error", tex_path.name],
+            cwd=run_dir, capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
+        )
+        logs.append(f"===== LaTeX pass {pass_number} =====\n{completed.stdout}\n{completed.stderr}")
+        if completed.returncode != 0:
+            return False, "\n".join(logs)
+    return True, "\n".join(logs)
+
+
+def _clear_latex_build_files(run_dir: Path) -> None:
+    for suffix in (".aux", ".out", ".toc", ".pdf"):
+        (run_dir / f"digest{suffix}").unlink(missing_ok=True)
+
+
 def write_outputs(run_dir: Path, records: list[dict], formats: list[str], compile_pdf: bool) -> dict[str, str]:
     outputs: dict[str, str] = {}
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -230,18 +250,29 @@ def write_outputs(run_dir: Path, records: list[dict], formats: list[str], compil
         outputs["latex"] = str(tex_path)
         if compile_pdf:
             engine = shutil.which("xelatex") or shutil.which("lualatex")
-            if engine:
-                for _ in range(2):
-                    completed = subprocess.run(
-                        [engine, "-interaction=nonstopmode", "-halt-on-error", tex_path.name],
-                        cwd=run_dir, capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
-                    )
-                    if completed.returncode != 0:
-                        (run_dir / "latex-error.log").write_text(completed.stdout + "\n" + completed.stderr, encoding="utf-8")
-                        break
-                pdf_path = run_dir / "digest.pdf"
-                if pdf_path.exists():
-                    outputs["pdf"] = str(pdf_path)
-            else:
-                (run_dir / "latex-warning.txt").write_text("XeLaTeX or LuaLaTeX was not found; digest.tex was generated but not compiled.\n", encoding="utf-8")
+            if not engine:
+                warning_path = run_dir / "latex-warning.txt"
+                warning_path.write_text(
+                    "XeLaTeX or LuaLaTeX was not found; digest.tex could not be compiled.\n", encoding="utf-8"
+                )
+                raise RuntimeError(f"PDF compilation was requested but no LaTeX engine was found; see {warning_path}")
+
+            _clear_latex_build_files(run_dir)
+            success, build_log = _compile_latex(engine, tex_path, run_dir)
+            (run_dir / "latex-build.log").write_text(build_log, encoding="utf-8")
+            if not success:
+                (run_dir / "latex-error-first-pass.log").write_text(build_log, encoding="utf-8")
+                _clear_latex_build_files(run_dir)
+                tex_path.write_text(render_latex(records, preserve_math=False), encoding="utf-8")
+                success, recovery_log = _compile_latex(engine, tex_path, run_dir)
+                (run_dir / "latex-recovery.log").write_text(recovery_log, encoding="utf-8")
+                build_log = recovery_log
+
+            pdf_path = run_dir / "digest.pdf"
+            if not success or not pdf_path.is_file() or pdf_path.stat().st_size == 0:
+                error_path = run_dir / "latex-error.log"
+                error_path.write_text(build_log, encoding="utf-8")
+                tail = " | ".join(line.strip() for line in build_log.splitlines()[-8:] if line.strip())
+                raise RuntimeError(f"PDF compilation failed; see {error_path}. Last LaTeX output: {tail}")
+            outputs["pdf"] = str(pdf_path)
     return outputs

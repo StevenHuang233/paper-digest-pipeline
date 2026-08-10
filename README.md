@@ -6,10 +6,11 @@
 
 ## 核心信息流
 
-`论文源 → 最多 2000 篇候选 → 硬排除词 → LLM 分批二元判断 → 最多保留 500 篇 → 最多 N 篇全文总结 → Markdown/LaTeX/PDF → 邮件`
+`论文源 → 最多 N 篇候选 → 硬排除词 → LLM 分批二元判断 → 可选的 LLM 二阶段价值精选 → 最多保留 K 篇 → 最多 M 篇全文总结 → Markdown/LaTeX/PDF → 邮件`
 
-- 筛选不按相关性分数排序。`selection.decision_policy` 是最终收录边界，模型必须为每篇论文返回 `include` 或 `exclude` 及原因。
-- `discovery.max_candidates`、`selection.max_selected_papers` 和 `review.max_papers` 相互独立。保留 500 篇不会自动总结 500 篇。
+- 两个阶段都不使用数值分数。`selection.decision_policy` 先要求模型逐篇返回 `include/exclude`；启用 `selection.llm_prioritize` 后，`selection.priority_policy` 再让模型输出有序短名单。
+- 关闭二阶段精选时，`selection.max_selected_papers` 仍会严格限制保留数量，只是按论文源原始顺序截断。
+- `discovery.max_candidates`、`selection.max_selected_papers` 和 `review.max_papers` 相互独立；可以精选 50 篇但只全文总结前 10 篇。
 - 全文总结默认读取 PDF，并在附录、补充材料、致谢或参考文献前停止；无法取得全文时会明确标为摘要证据。
 - `selection-decisions.json` 保存全部筛选决定，便于校验准确性。
 
@@ -37,6 +38,22 @@ paper-digest run --config config.toml --date 2026-07-30 --max-papers 10
 
 ```powershell
 paper-digest run --config config.toml --dry-run
+```
+
+可选的二阶段价值精选：
+
+```toml
+[selection]
+max_selected_papers = 50
+llm_prioritize = true                 # false：按原始顺序截断；true：让 LLM 比较后精选
+priority_batch_size = 50
+priority_local_buffer_ratio = 1.5
+priority_abstract_chars = 1200
+priority_max_output_tokens = 5000
+priority_policy = """
+按研究契合度、方法创新性、技术深度、实验可信度和研究启发价值精选，
+同时保持主题多样性，避免大量近重复论文。
+"""
 ```
 
 若要总结全部入选论文，把 `config.toml` 中的 `review.max_papers` 改为与 `selection.max_selected_papers` 相同，例如 500。费用和运行时间也会相应增加。
@@ -72,9 +89,13 @@ paper-digest run --config config.toml --dry-run
 | `discovery.source` | 论文来源 | 每日 arXiv 用 `arxiv`；会议可用 `openreview`、`crossref` 或 `json` |
 | `discovery.date` | arXiv 提交日期 | 每日邮件固定用 `yesterday`，避免当天数据尚未完整 |
 | `discovery.max_candidates` | 最多进入筛选的论文数 | 完整扫描上限可设 2000；触顶时 manifest 会提示 |
-| `selection.max_selected_papers` | 二元判断后最多保留数 | 当前建议 500；它不是总结数量 |
+| `selection.max_selected_papers` | 最终最多保留数 | 无论是否启用二阶段精选都会生效 |
 | `selection.llm_batch_size` | 单次筛选请求论文数 | 40 是成本、输出长度和稳定性的折中值 |
 | `selection.decision_policy` | include/exclude 的最终边界 | 明确“哪些必须收、哪些必须排”，不要写模糊打分要求 |
+| `selection.llm_prioritize` | 是否启用二阶段精选 | `false` 直接截断；`true` 比较候选并返回有序短名单 |
+| `selection.priority_batch_size` | 局部精选批量 | 默认 50 |
+| `selection.priority_local_buffer_ratio` | 局部短名单缓冲倍率 | 默认 1.5；越高越稳健，但全局比较成本越高 |
+| `selection.priority_policy` | 二阶段价值判断逻辑 | 可按研究契合度、新颖性、实验质量和多样性自由配置 |
 | `review.max_papers` | 每日做全文总结的数量 | 初次部署先设 1，稳定后改为 10 或所需数量 |
 | `backend.base_url/model` | 模型接口和模型名 | DeepSeek 示例已配置；换服务商时一并修改 |
 | `backend.api_key_env` | API Key 所在环境变量名 | Actions 保持 `PAPER_DIGEST_API_KEY`，这里不能填 Key 本身 |
@@ -88,7 +109,7 @@ paper-digest run --config config.toml --dry-run
 | `email.smtp_host/port/security` | SMTP 手动覆盖 | 三种内置服务商保持空值、`0`、`auto`；只有自定义邮箱才需要填写 |
 | `email.max_attachment_mb` | 单个附件大小上限 | 常见邮箱用 20 MB 较稳妥；超限文件仍可从 Artifact 下载 |
 
-`decision_policy` 的写法尤其重要。推荐按“收录条件 A/B + 排除条件 + 证据不足如何处理”的结构写，例如：论文的主要贡献必须直接研究多模态学习或 OPD；只是在应用背景中顺带提及多模态的论文排除；仅凭标题和摘要无法确认时排除。模型会把同一规则应用到每个批次，不会为单批次设置配额。
+`decision_policy` 决定相关性边界；`priority_policy` 决定相关论文之间的价值取舍。二阶段精选仅在相关论文超过 `max_selected_papers` 时调用：模型先从各批次保留带缓冲的候选，再进行一次全局比较。两阶段都不输出数值分数。
 
 ### 2. 添加 GitHub Secrets
 
@@ -176,7 +197,7 @@ provider = "netease"
 
 默认发送时间为北京时间约 09:30。要改为北京时间每天 08:00，把 workflow 中 cron 改成 `0 0 * * *`；北京时间 = UTC + 8。修改后提交并推送到默认分支才会生效。
 
-邮件主题会包含状态、项目名和配置日期；正文列出候选数、include/exclude 数、计划/完成总结数和失败数。成功时附 `digest.pdf` 与 `digest.md`，部分完成或失败时还会附 `run.log`。邮件附件缺失或过大时，可在对应 Actions 运行页下载完整 Artifact。
+邮件主题会包含状态、项目名和配置日期；正文列出候选数、include/exclude 数、计划/完成总结数和失败数。默认成功邮件只附按统一 LaTeX 模板编译的 `digest.pdf`，Markdown 仍保存在 Actions Artifact。启用 `require_pdf_attachment` 后，PDF 缺失或超限会明确报错，不再静默发送 Markdown 代替。
 
 ## 手动测试邮件
 

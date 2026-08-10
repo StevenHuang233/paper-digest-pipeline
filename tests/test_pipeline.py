@@ -11,10 +11,10 @@ from paper_digest.backends import OpenAICompatibleBackend
 from paper_digest.budget import Budget
 from paper_digest.config import load_config
 from paper_digest.emailer import build_message, read_result, resolve_smtp_settings, send_digest_email
-from paper_digest.filtering import llm_rerank, rule_rank
+from paper_digest.filtering import llm_prioritize, llm_rerank, rule_rank
 from paper_digest.fulltext import CUTOFF
 from paper_digest.models import Paper
-from paper_digest.outputs import latex_escape, render_latex, render_markdown
+from paper_digest.outputs import latex_escape, render_latex, render_markdown, write_outputs
 from paper_digest.orchestrator import job_label, rank_and_select, run_pipeline
 from paper_digest.review_prompt import build_review_prompt
 from paper_digest.sources.arxiv import build_query, parse_feed, resolve_date
@@ -129,6 +129,107 @@ class SelectionTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "omitted 1 of 2"):
             llm_rerank(papers, {"interests": ["multimodal"]}, IncompleteRanker())
 
+    def test_binary_only_selection_respects_configured_limit_and_source_order(self):
+        papers = [Paper(id=f"paper-{index}", title=f"Paper {index}") for index in range(8)]
+
+        class IncludeAllBackend:
+            def generate_json(self, system, prompt, **kwargs):
+                compact = json.loads(prompt.rsplit("Papers:\n", 1)[1])
+                return {"decisions": [
+                    {"id": item["id"], "decision": "include", "reason": "Relevant."}
+                    for item in compact
+                ]}, {}
+
+        config = {
+            "preferences": {"interests": ["paper"], "include_keywords": [], "exclude_keywords": [], "categories": []},
+            "selection": {
+                "ranker": "llm", "min_score": 0.0, "max_selected_papers": 3,
+                "llm_batch_size": 40, "llm_abstract_chars": 1600,
+                "llm_max_output_tokens": 4000, "llm_thinking_mode": "disabled",
+                "decision_policy": "Include relevant papers.", "llm_prioritize": False,
+            },
+            "backend": {},
+        }
+        selected = rank_and_select(config, papers, backend=IncludeAllBackend())
+        self.assertEqual([paper.id for paper in selected], ["paper-0", "paper-1", "paper-2"])
+
+    def test_llm_priority_uses_local_then_global_shortlists_without_scores(self):
+        papers = [
+            Paper(id=f"paper-{index}", title=f"Multimodal Method {index}", abstract="Detailed method and experiments.")
+            for index in range(120)
+        ]
+
+        class PriorityBackend:
+            calls = 0
+            prompts = []
+
+            def generate_json(self, system, prompt, **kwargs):
+                self.calls += 1
+                self.prompts.append(prompt)
+                compact = json.loads(prompt.rsplit("Papers:\n", 1)[1])
+                quota = int(prompt.split("Return exactly ", 1)[1].split(" unique papers", 1)[0])
+                return {"shortlist": [
+                    {"id": item["id"], "reason": "Strong fit and substantive experiments."}
+                    for item in compact[:quota]
+                ]}, {}
+
+        backend = PriorityBackend()
+        selected = llm_prioritize(
+            papers, backend, max_papers=50, batch_size=40,
+            priority_policy="Prefer high-value multimodal methods.",
+        )
+        self.assertEqual(len(selected), 50)
+        self.assertEqual(backend.calls, 4)
+        self.assertTrue(all("Do not output scores" in prompt for prompt in backend.prompts))
+        self.assertTrue(selected[0].score_reasons[-1].startswith("LLM priority #1:"))
+
+    def test_llm_priority_rejects_wrong_shortlist_size(self):
+        papers = [Paper(id=f"p{index}", title=f"Paper {index}") for index in range(3)]
+
+        class IncompletePriorityBackend:
+            def generate_json(self, system, prompt, **kwargs):
+                return {"shortlist": []}, {}
+
+        with self.assertRaisesRegex(RuntimeError, "expected exactly"):
+            llm_prioritize(papers, IncompletePriorityBackend(), max_papers=2, batch_size=3)
+
+    def test_rank_and_select_applies_configured_priority_shortlist(self):
+        papers = [
+            Paper(id=f"paper-{index}", title=f"Multimodal Paper {index}", abstract="A relevant method.")
+            for index in range(60)
+        ]
+
+        class CombinedBackend:
+            def generate_json(self, system, prompt, **kwargs):
+                compact = json.loads(prompt.rsplit("Papers:\n", 1)[1])
+                if "Decide whether to include" in prompt:
+                    return {"decisions": [
+                        {"id": item["id"], "decision": "include", "reason": "Relevant multimodal method."}
+                        for item in compact
+                    ]}, {}
+                quota = int(prompt.split("Return exactly ", 1)[1].split(" unique papers", 1)[0])
+                return {"shortlist": [
+                    {"id": item["id"], "reason": "High-value research fit."}
+                    for item in reversed(compact[:quota])
+                ]}, {}
+
+        config = {
+            "preferences": {"interests": ["multimodal"], "include_keywords": [], "exclude_keywords": [], "categories": []},
+            "selection": {
+                "ranker": "llm", "min_score": 0.0, "max_selected_papers": 10,
+                "llm_batch_size": 40, "llm_abstract_chars": 1600,
+                "llm_max_output_tokens": 4000, "llm_thinking_mode": "disabled",
+                "decision_policy": "Include relevant multimodal papers.",
+                "llm_prioritize": True, "priority_batch_size": 30,
+                "priority_abstract_chars": 1200, "priority_max_output_tokens": 5000,
+                "priority_policy": "Prefer the most valuable methods.",
+            },
+            "backend": {},
+        }
+        selected = rank_and_select(config, papers, backend=CombinedBackend())
+        self.assertEqual(len(selected), 10)
+        self.assertTrue(all(any("LLM priority" in reason for reason in paper.score_reasons) for paper in selected))
+
 
 class BackendTests(unittest.TestCase):
     def test_deepseek_json_and_thinking_parameters(self):
@@ -240,6 +341,19 @@ class EmailTests(unittest.TestCase):
             self.assertEqual(read_result(path), {})
             self.assertEqual(read_result(Path(temp) / "missing.json"), {})
 
+    def test_success_email_requires_a_compiled_pdf(self):
+        with tempfile.TemporaryDirectory() as temp:
+            markdown = Path(temp) / "digest.md"
+            markdown.write_text("# Digest", encoding="utf-8")
+            result = {"outputs": {"markdown": str(markdown)}}
+            env = {
+                "TEST_SMTP_USER": "sender@example.com", "TEST_SMTP_PASSWORD": "test-app-password",
+                "TEST_EMAIL_TO": "receiver@example.com", "TEST_EMAIL_FROM": "",
+            }
+            with patch.dict(os.environ, env, clear=False):
+                with self.assertRaisesRegex(RuntimeError, "requires digest.pdf"):
+                    build_message(self._config(), result, status="success")
+
     def test_qq_gmail_and_netease_provider_presets(self):
         base = {"smtp_host": "", "smtp_port": 0, "security": "auto"}
         cases = [
@@ -321,6 +435,31 @@ class CrossrefTests(unittest.TestCase):
 
 
 class OutputTests(unittest.TestCase):
+    def test_failed_math_compile_retries_with_safe_text_and_produces_pdf(self):
+        record = {
+            "paper": {"title": "Risky $x&y$ title", "url": "https://arxiv.org/abs/1", "authors": []},
+            "review": {key: "Formula $x&y$ and explanation." for key in ["background", "motivation", "idea", "method", "experiments", "conclusion"]}
+            | {"evidence_level": "fulltext", "limitations": ""},
+        }
+        attempts = []
+
+        def fake_compile(engine, tex_path, run_dir):
+            attempts.append(tex_path.read_text(encoding="utf-8"))
+            if len(attempts) == 1:
+                return False, "Misplaced alignment tab character &"
+            (run_dir / "digest.pdf").write_bytes(b"%PDF-safe-retry")
+            return True, "safe compile ok"
+
+        with tempfile.TemporaryDirectory() as temp:
+            with patch("paper_digest.outputs.shutil.which", return_value="xelatex"):
+                with patch("paper_digest.outputs._compile_latex", side_effect=fake_compile):
+                    outputs = write_outputs(Path(temp), [record], ["latex"], True)
+            self.assertEqual(len(attempts), 2)
+            self.assertIn("$x&y$", attempts[0])
+            self.assertIn(r"\$x\&y\$", attempts[1])
+            self.assertTrue(Path(outputs["pdf"]).is_file())
+            self.assertTrue((Path(temp) / "latex-error-first-pass.log").is_file())
+
     def test_latex_escape_distinguishes_currency_from_math(self):
         rendered = latex_escape("cost $100/千条轨迹, then $1.36; model $β$ uses λ")
         self.assertIn(r"\$100/千条轨迹", rendered)

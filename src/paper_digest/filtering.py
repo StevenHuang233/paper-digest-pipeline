@@ -77,6 +77,25 @@ def _decision_schema() -> dict:
     }
 
 
+def _priority_schema() -> dict:
+    return {
+        "type": "object", "additionalProperties": False,
+        "properties": {
+            "shortlist": {
+                "type": "array", "items": {
+                    "type": "object", "additionalProperties": False,
+                    "properties": {
+                        "id": {"type": "string"},
+                        "reason": {"type": "string"},
+                    },
+                    "required": ["id", "reason"],
+                },
+            }
+        },
+        "required": ["shortlist"],
+    }
+
+
 def llm_rerank(
     papers: list[Paper], preferences: dict, backend, *, batch_size: int = 40,
     abstract_chars: int = 1600, max_output_tokens: int = 4000,
@@ -147,3 +166,102 @@ Papers:
             selection_decision=decision, selection_scores={},
         ))
     return reranked
+
+
+def _priority_request(
+    papers: list[tuple[str, Paper]], backend, *, quota: int, abstract_chars: int,
+    max_output_tokens: int, thinking_mode: str, priority_policy: str,
+    stage: str, budget=None,
+) -> list[tuple[str, str]]:
+    compact = [
+        {
+            "id": record_id, "title": paper.title,
+            "abstract": paper.abstract[:abstract_chars], "categories": paper.categories,
+        }
+        for record_id, paper in papers
+    ]
+    prompt = f"""Select the most valuable papers for this user's daily research reading list from the supplied candidates.
+
+This is a comparative shortlist, not numeric scoring. Apply the priority policy to the paper's primary
+contribution using title and abstract evidence. Prefer strong research fit, substantive and novel methods,
+credible experiments or benchmarks, and ideas likely to inform the user's own research. Preserve diversity
+across the user's stated interests instead of filling the list with near-duplicate papers.
+
+Return exactly {quota} unique papers, ordered from most to least valuable within this {stage} selection.
+Do not output scores, probabilities, confidence values, or ranks. Return strict JSON and keep each reason
+under 20 words.
+
+Required JSON example:
+{{"shortlist":[{{"id":"p000000","reason":"Directly improves grounded visual evidence acquisition with strong evaluation."}}]}}
+
+Priority policy:
+{priority_policy}
+
+Papers:
+{json.dumps(compact, ensure_ascii=False)}"""
+    if budget is not None:
+        budget.reserve(prompt, max_output_tokens)
+    response, _usage = backend.generate_json(
+        "You are a strict academic-paper shortlist editor. Output JSON only.",
+        prompt, max_output_tokens=max_output_tokens, schema=_priority_schema(), thinking_mode=thinking_mode,
+    )
+    expected = {record_id for record_id, _paper in papers}
+    chosen: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for item in response.get("shortlist", []):
+        record_id = str(item.get("id") or "")
+        if record_id not in expected or record_id in seen:
+            continue
+        reason = " ".join(str(item.get("reason") or "Selected by LLM priority shortlist").split())
+        chosen.append((record_id, reason))
+        seen.add(record_id)
+    if len(chosen) != quota:
+        raise RuntimeError(f"LLM priority response returned {len(chosen)} valid papers; expected exactly {quota}")
+    return chosen
+
+
+def llm_prioritize(
+    papers: list[Paper], backend, *, max_papers: int, batch_size: int = 50,
+    local_buffer_ratio: float = 1.5,
+    abstract_chars: int = 1200, max_output_tokens: int = 5000,
+    thinking_mode: str = "disabled", priority_policy: str = "", budget=None,
+) -> list[Paper]:
+    """Choose an ordered top-N shortlist without assigning numeric relevance scores."""
+    if max_papers < 1:
+        raise ValueError("max_papers must be at least 1")
+    if len(papers) <= max_papers:
+        return papers
+
+    indexed = [(f"p{index:06d}", paper) for index, paper in enumerate(papers)]
+    paper_by_id = dict(indexed)
+    pool: list[tuple[str, Paper]] = []
+    total = len(indexed)
+    for start in range(0, total, batch_size):
+        batch = indexed[start : start + batch_size]
+        proportional_quota = math.ceil(max_papers * len(batch) / total)
+        # A configurable buffer reduces early batch-allocation bias before the global pass.
+        local_quota = min(len(batch), max(1, math.ceil(proportional_quota * local_buffer_ratio)))
+        local = _priority_request(
+            batch, backend, quota=local_quota, abstract_chars=abstract_chars,
+            max_output_tokens=max_output_tokens, thinking_mode=thinking_mode,
+            priority_policy=priority_policy, stage="local", budget=budget,
+        )
+        pool.extend((record_id, paper_by_id[record_id]) for record_id, _reason in local)
+
+    if len(pool) > max_papers:
+        final = _priority_request(
+            pool, backend, quota=max_papers, abstract_chars=abstract_chars,
+            max_output_tokens=max_output_tokens, thinking_mode=thinking_mode,
+            priority_policy=priority_policy, stage="global", budget=budget,
+        )
+    else:
+        final = [(record_id, "Selected by local priority shortlist") for record_id, _paper in pool]
+
+    result: list[Paper] = []
+    for rank, (record_id, reason) in enumerate(final, start=1):
+        paper = paper_by_id[record_id]
+        result.append(replace(
+            paper,
+            score_reasons=[*paper.score_reasons, f"LLM priority #{rank}: {reason}"],
+        ))
+    return result
