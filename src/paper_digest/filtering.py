@@ -266,9 +266,9 @@ contribution using title and abstract evidence. Prefer strong research fit, subs
 credible experiments or benchmarks, and ideas likely to inform the user's own research. Preserve diversity
 across the user's stated interests instead of filling the list with near-duplicate papers.
 
-Return exactly {quota} unique papers, ordered from most to least valuable within this {stage} selection.
-Do not output scores, probabilities, confidence values, or ranks. Return strict JSON and keep each reason
-under 20 words.
+Return at most {quota} unique papers, ordered from most to least valuable within this {stage} selection.
+It is acceptable to return fewer when fewer candidates deserve to advance. Do not output scores,
+probabilities, confidence values, or ranks. Return strict JSON and keep each reason under 20 words.
 
 Required JSON example:
 {{"shortlist":[{{"id":"p000000","reason":"Directly improves grounded visual evidence acquisition with strong evaluation."}}]}}
@@ -294,9 +294,11 @@ Papers:
         reason = " ".join(str(item.get("reason") or "Selected by LLM priority shortlist").split())
         chosen.append((record_id, reason))
         seen.add(record_id)
-    if len(chosen) != quota:
-        raise RuntimeError(f"LLM priority response returned {len(chosen)} valid papers; expected exactly {quota}")
-    return chosen
+    # Some OpenAI-compatible providers do not enforce array length from the
+    # prompt and may return the whole panel. Keep the model's order, cap the
+    # response locally, and accept a shorter shortlist instead of failing the
+    # entire daily job.
+    return chosen[:quota]
 
 
 def llm_prioritize(
@@ -343,8 +345,11 @@ def llm_prioritize(
                     # A fixed loss penalty is comparable across differently sized panels.
                     rank_cost[record_id] += 2.0
 
+    # A paper must advance through at least one comparison panel. This keeps
+    # max_papers as a ceiling rather than silently filling the digest with
+    # candidates that the model never shortlisted.
     final_ids = sorted(
-        paper_by_id,
+        (record_id for record_id in paper_by_id if wins[record_id] > 0),
         key=lambda record_id: (
             -wins[record_id], rank_cost[record_id],
             hashlib.sha256(f"{shuffle_seed}\0final\0{record_id}".encode("utf-8")).hexdigest(),

@@ -170,7 +170,7 @@ class SelectionTests(unittest.TestCase):
                 self.calls += 1
                 self.prompts.append(prompt)
                 compact = json.loads(prompt.rsplit("Papers:\n", 1)[1])
-                quota = int(prompt.split("Return exactly ", 1)[1].split(" unique papers", 1)[0])
+                quota = int(prompt.split("Return at most ", 1)[1].split(" unique papers", 1)[0])
                 return {"shortlist": [
                     {"id": item["id"], "reason": "Strong fit and substantive experiments."}
                     for item in compact[:quota]
@@ -186,15 +186,33 @@ class SelectionTests(unittest.TestCase):
         self.assertTrue(all("Do not output scores" in prompt for prompt in backend.prompts))
         self.assertTrue(selected[0].score_reasons[-1].startswith("LLM priority #1 ("))
 
-    def test_llm_priority_rejects_wrong_shortlist_size(self):
+    def test_llm_priority_accepts_a_shorter_shortlist(self):
         papers = [Paper(id=f"p{index}", title=f"Paper {index}") for index in range(3)]
 
-        class IncompletePriorityBackend:
+        class ShortPriorityBackend:
             def generate_json(self, system, prompt, **kwargs):
-                return {"shortlist": []}, {}
+                return {"shortlist": [{"id": "p000000", "reason": "Only strong candidate."}]}, {}
 
-        with self.assertRaisesRegex(RuntimeError, "expected exactly"):
-            llm_prioritize(papers, IncompletePriorityBackend(), max_papers=2, batch_size=3)
+        selected = llm_prioritize(
+            papers, ShortPriorityBackend(), max_papers=2, batch_size=3, rounds=1,
+        )
+        self.assertEqual([paper.id for paper in selected], ["p0"])
+
+    def test_llm_priority_caps_an_oversized_shortlist(self):
+        papers = [Paper(id=f"p{index}", title=f"Paper {index}") for index in range(3)]
+
+        class OversizedPriorityBackend:
+            def generate_json(self, system, prompt, **kwargs):
+                compact = json.loads(prompt.rsplit("Papers:\n", 1)[1])
+                return {"shortlist": [
+                    {"id": item["id"], "reason": "Candidate returned by provider."}
+                    for item in compact
+                ]}, {}
+
+        selected = llm_prioritize(
+            papers, OversizedPriorityBackend(), max_papers=2, batch_size=3, rounds=1,
+        )
+        self.assertEqual(len(selected), 2)
 
     def test_rotating_priority_panels_do_not_starve_the_source_tail(self):
         papers = [
@@ -205,7 +223,7 @@ class SelectionTests(unittest.TestCase):
         class PositionBiasedBackend:
             def generate_json(self, system, prompt, **kwargs):
                 compact = json.loads(prompt.rsplit("Papers:\n", 1)[1])
-                quota = int(prompt.split("Return exactly ", 1)[1].split(" unique papers", 1)[0])
+                quota = int(prompt.split("Return at most ", 1)[1].split(" unique papers", 1)[0])
                 return {"shortlist": [
                     {"id": item["id"], "reason": "Preferred within this panel."}
                     for item in compact[:quota]
@@ -266,7 +284,7 @@ class SelectionTests(unittest.TestCase):
                         {"id": item["id"], "decision": "include", "match_area": "A", "reason": "Relevant multimodal method."}
                         for item in compact
                     ]}, {}
-                quota = int(prompt.split("Return exactly ", 1)[1].split(" unique papers", 1)[0])
+                quota = int(prompt.split("Return at most ", 1)[1].split(" unique papers", 1)[0])
                 return {"shortlist": [
                     {"id": item["id"], "reason": "High-value research fit."}
                     for item in reversed(compact[:quota])
