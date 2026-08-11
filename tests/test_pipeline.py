@@ -15,14 +15,35 @@ from paper_digest.filtering import llm_prioritize, llm_rerank, rule_rank
 from paper_digest.fulltext import CUTOFF
 from paper_digest.models import Paper
 from paper_digest.outputs import latex_escape, render_latex, render_markdown, write_outputs
-from paper_digest.orchestrator import job_label, rank_and_select, run_pipeline
+from paper_digest.orchestrator import _completion_status, job_label, rank_and_select, run_pipeline
 from paper_digest.review_prompt import build_review_prompt
 from paper_digest.sources.arxiv import build_query, parse_feed, resolve_date
+from paper_digest.sources.common import get_bytes
 from paper_digest.sources.crossref import parse_items, venue_similarity
 from paper_digest.sources.openreview import parse_notes
 
 
 class ArxivTests(unittest.TestCase):
+    def test_network_timeout_is_retried(self):
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def read(self):
+                return b"recovered"
+
+        with patch(
+            "paper_digest.sources.common.urllib.request.urlopen",
+            side_effect=[TimeoutError("slow response"), FakeResponse()],
+        ) as mocked_open, patch("paper_digest.sources.common.time.sleep") as mocked_sleep:
+            payload = get_bytes("https://example.test/feed", attempts=2, backoff_seconds=0.01)
+        self.assertEqual(payload, b"recovered")
+        self.assertEqual(mocked_open.call_count, 2)
+        mocked_sleep.assert_called_once_with(0.01)
+
     def test_date_and_query(self):
         date = resolve_date("2026-07-28")
         self.assertEqual(str(date), "2026-07-28")
@@ -512,6 +533,11 @@ class CrossrefTests(unittest.TestCase):
 
 
 class OutputTests(unittest.TestCase):
+    def test_partial_delivery_policy_keeps_usable_digest_green(self):
+        self.assertEqual(_completion_status(49, 50, fail_on_incomplete=False), "complete")
+        self.assertEqual(_completion_status(49, 50, fail_on_incomplete=True), "partial")
+        self.assertEqual(_completion_status(0, 50, fail_on_incomplete=False), "partial")
+
     def test_failed_math_compile_retries_with_safe_text_and_produces_pdf(self):
         record = {
             "paper": {"title": "Risky $x&y$ title", "url": "https://arxiv.org/abs/1", "authors": []},

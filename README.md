@@ -232,9 +232,13 @@ paper-digest email --config config.toml --result outputs\arxiv-YYYY-MM-DD\manife
 
 筛选阶段只发送标题、类别和截断摘要；只有最终总结目标才下载全文。`budget.max_total_tokens` 与 `budget.max_estimated_usd` 是硬门槛。请按实际服务商价格维护单价；单价为 0 时只执行 token 限制。
 
+## 网络请求重试
+
+`discovery.request_timeout_seconds` 控制单次 arXiv 请求超时，`discovery.request_attempts` 控制遇到超时、HTTP 429 或临时 5xx 错误时的最大尝试次数。默认分别为 `120` 秒和 `4` 次。
+
 ## 全文总结重试
 
-`review.max_attempts` 控制单篇全文总结遇到接口错误、空响应或 JSON 字段缺失时的最大尝试次数，默认值为 `3`，允许范围为 `1`--`5`。只有某篇论文连续达到该次数仍失败时，任务才会将其记入 `failed_count` 并报告 `partial`。
+`review.max_attempts` 控制单篇全文总结遇到接口错误、空响应或 JSON 字段缺失时的最大尝试次数，默认值为 `3`，允许范围为 `1`--`5`。`review.fail_on_incomplete = false` 时，只要至少生成一篇可用总结就会正常交付 PDF，同时邮件继续显示真实 `failed_count`；设为 `true` 可恢复严格的 `partial` 失败状态。
 
 ## License
 

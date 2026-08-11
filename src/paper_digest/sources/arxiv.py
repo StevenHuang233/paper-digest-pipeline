@@ -60,8 +60,12 @@ def parse_feed(payload: bytes) -> tuple[list[Paper], int]:
 
 
 def fetch_arxiv(config: dict, *, get: Callable[[str], bytes] | None = None) -> list[Paper]:
-    getter = get or (lambda url: get_bytes(url, accept="application/atom+xml"))
     discovery = config["discovery"]
+    getter = get or (lambda url: get_bytes(
+        url, accept="application/atom+xml",
+        timeout=int(discovery.get("request_timeout_seconds", 120)),
+        attempts=int(discovery.get("request_attempts", 4)),
+    ))
     date = resolve_date(str(discovery["date"]))
     query = build_query(date, list(config["preferences"].get("categories") or []))
     limit = int(discovery["max_candidates"])
@@ -83,4 +87,3 @@ def fetch_arxiv(config: dict, *, get: Callable[[str], bytes] | None = None) -> l
         if len(papers) < limit and start < total and get is None:
             time.sleep(delay)
     return papers[:limit]
-

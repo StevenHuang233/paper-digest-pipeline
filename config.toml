@@ -31,6 +31,8 @@ date = "yesterday"                  # today | yesterday | YYYY-MM-DD；每日任
 max_candidates = 2000               # 进入筛选的候选上限
 page_size = 200                      # arXiv 单页数量
 request_delay_seconds = 3.1          # arXiv 多页请求间隔，建议不低于 3 秒
+request_timeout_seconds = 120        # 单次 arXiv 请求超时；超时后会自动重试
+request_attempts = 4                 # arXiv 临时超时或 429/5xx 时的最大尝试次数
 json_path = ""                       # source=json 时填写，路径相对于本文件
 
 [discovery.openreview]
@@ -98,6 +100,7 @@ and avoid filling the shortlist with near-duplicate papers. Do not assign numeri
 [review]
 max_papers = 10                       # 每次做 PDF 全文六段式总结的上限；设为 500 可总结全部入选论文
 max_attempts = 3                      # 单篇总结遇到接口或 JSON 校验错误时最多尝试 3 次
+fail_on_incomplete = false            # false：有可用总结即正常交付，邮件仍显示失败数量
 
 [backend]
 type = "openai_compatible"            # openai_compatible | codex；Actions 推荐前者

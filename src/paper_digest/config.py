@@ -12,7 +12,8 @@ DEFAULTS: dict[str, Any] = {
     "preferences": {"interests": [], "include_keywords": [], "exclude_keywords": [], "categories": []},
     "discovery": {
         "source": "arxiv", "date": "today", "max_candidates": 2000,
-        "page_size": 200, "request_delay_seconds": 3.1, "json_path": "",
+        "page_size": 200, "request_delay_seconds": 3.1,
+        "request_timeout_seconds": 120, "request_attempts": 4, "json_path": "",
         "openreview": {"venue_id": "", "status": "accepted", "submission_invitation": "", "base_url": "https://api2.openreview.net"},
         "crossref": {
             "conference": "", "from_date": "", "until_date": "", "mailto": "",
@@ -34,7 +35,7 @@ DEFAULTS: dict[str, Any] = {
             "research interest. Exclude incidental mentions, generic AI relevance, and insufficient evidence."
         ),
     },
-    "review": {"max_papers": 5, "max_attempts": 3},
+    "review": {"max_papers": 5, "max_attempts": 3, "fail_on_incomplete": False},
     "backend": {
         "type": "openai_compatible", "base_url": "", "model": "", "api_key_env": "PAPER_DIGEST_API_KEY",
         "max_output_tokens": 5500, "temperature": 0.2, "timeout_seconds": 300, "codex_model": "",
@@ -127,6 +128,10 @@ def validate_config(config: dict[str, Any], *, require_backend: bool = True) -> 
         raise ValueError("discovery.json_path is required")
     if int(config["discovery"]["max_candidates"]) < 1:
         raise ValueError("discovery.max_candidates must be >= 1")
+    if int(config["discovery"]["request_timeout_seconds"]) < 1:
+        raise ValueError("discovery.request_timeout_seconds must be >= 1")
+    if not 1 <= int(config["discovery"]["request_attempts"]) <= 10:
+        raise ValueError("discovery.request_attempts must be between 1 and 10")
     if int(config["selection"]["max_selected_papers"]) < 1:
         raise ValueError("selection.max_selected_papers must be >= 1")
     if int(config["review"]["max_papers"]) < 1:

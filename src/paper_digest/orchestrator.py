@@ -120,6 +120,14 @@ def _selection_fingerprint(config: dict, papers: list[Paper], effective_ranker: 
     return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
 
 
+def _completion_status(completed: int, target: int, *, fail_on_incomplete: bool) -> str:
+    if completed == target:
+        return "complete"
+    if completed > 0 and not fail_on_incomplete:
+        return "complete"
+    return "partial"
+
+
 def run_pipeline(config: dict, config_path: Path, *, dry_run: bool = False, force: bool = False, papers_path: Path | None = None) -> dict:
     run_dir = job_directory(config)
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -260,7 +268,10 @@ def run_pipeline(config: dict, config_path: Path, *, dry_run: bool = False, forc
     write_json(state_path, state)
     outputs = write_outputs(run_dir, records, list(config["output"]["formats"]), bool(config["output"]["compile_pdf"]))
     manifest = {
-        "status": "complete" if len(records) == len(review_targets) else "partial",
+        "status": _completion_status(
+            len(records), len(review_targets),
+            fail_on_incomplete=bool(config["review"].get("fail_on_incomplete", False)),
+        ),
         "job_label": job_label(config),
         "candidate_count": len(candidates), "selected_count": len(selected),
         "candidate_limit_reached": len(candidates) >= candidate_limit,
