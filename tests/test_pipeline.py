@@ -624,6 +624,38 @@ class OutputTests(unittest.TestCase):
             self.assertTrue(Path(first["outputs"]["json"]).exists())
             self.assertTrue(Path(first["outputs"]["latex"]).exists())
 
+    def test_fulltext_review_retries_a_transient_model_failure(self):
+        config_path = Path(__file__).parent / "fixtures" / "dryrun.toml"
+        config, resolved = load_config(config_path)
+        config["fulltext"]["download_pdf"] = False
+        config["output"] = {"formats": ["json"], "compile_pdf": False}
+        config["review"]["max_attempts"] = 3
+
+        class FlakyBackend:
+            calls = 0
+
+            def generate_json(self, system, prompt, **kwargs):
+                self.calls += 1
+                if self.calls == 1:
+                    raise RuntimeError("temporary provider error")
+                value = {
+                    key: f"Readable {key} paragraph."
+                    for key in ["background", "motivation", "idea", "method", "experiments", "conclusion"]
+                }
+                value.update({"evidence_level": "abstract", "limitations": "Full text was unavailable."})
+                return value, {"input_tokens": 100, "output_tokens": 200}
+
+        backend = FlakyBackend()
+        with tempfile.TemporaryDirectory() as temp:
+            config["project"]["output_dir"] = temp
+            with patch("paper_digest.orchestrator.make_backend", return_value=backend):
+                result = run_pipeline(config, resolved)
+            summary_path = next(Path(result["run_dir"]).glob("summaries/*.json"))
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        self.assertEqual(result["status"], "complete")
+        self.assertEqual(backend.calls, 2)
+        self.assertEqual(summary["generation"]["attempts"], 2)
+
 
 if __name__ == "__main__":
     unittest.main()

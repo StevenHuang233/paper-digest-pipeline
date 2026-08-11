@@ -97,6 +97,7 @@ and avoid filling the shortlist with near-duplicate papers. Do not assign numeri
 
 [review]
 max_papers = 10                       # 每次做 PDF 全文六段式总结的上限；设为 500 可总结全部入选论文
+max_attempts = 3                      # 单篇总结遇到接口或 JSON 校验错误时最多尝试 3 次
 
 [backend]
 type = "openai_compatible"            # openai_compatible | codex；Actions 推荐前者

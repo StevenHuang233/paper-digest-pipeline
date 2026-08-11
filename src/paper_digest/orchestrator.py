@@ -220,14 +220,32 @@ def run_pipeline(config: dict, config_path: Path, *, dry_run: bool = False, forc
             text, evidence_level, evidence_note = paper.abstract, "abstract", "PDF download was disabled by configuration."
         prompt = build_review_prompt(paper, text, evidence_level, config["project"]["language"], evidence_note)
         try:
-            tokens, cost = budget.reserve(prompt, int(config["backend"]["max_output_tokens"]))
-            value, usage = backend.generate_json(
-                SYSTEM_PROMPT, prompt, max_output_tokens=int(config["backend"]["max_output_tokens"]), schema=REVIEW_SCHEMA
-            )
-            review = _validate_review(value, evidence_level)
+            max_attempts = int(config["review"].get("max_attempts", 3))
+            attempt_prompt = prompt
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    tokens, cost = budget.reserve(attempt_prompt, int(config["backend"]["max_output_tokens"]))
+                    value, usage = backend.generate_json(
+                        SYSTEM_PROMPT, attempt_prompt,
+                        max_output_tokens=int(config["backend"]["max_output_tokens"]), schema=REVIEW_SCHEMA,
+                    )
+                    review = _validate_review(value, evidence_level)
+                    break
+                except Exception as exc:
+                    if attempt >= max_attempts or "budget exceeded" in str(exc).lower():
+                        raise
+                    attempt_prompt = (
+                        f"{prompt}\n\nThe previous generation attempt failed with: {type(exc).__name__}: {exc}. "
+                        "Retry from the supplied paper evidence and return one complete JSON object containing "
+                        "all required six-part review fields."
+                    )
             record = {
                 "paper": paper.to_dict(), "review": review.to_dict(),
-                "generation": {"backend": config["backend"]["type"], "model": config["backend"].get("model", ""), "reserved_tokens": tokens, "reserved_usd": round(cost, 6), "reported_usage": usage},
+                "generation": {
+                    "backend": config["backend"]["type"], "model": config["backend"].get("model", ""),
+                    "attempts": attempt, "reserved_tokens": tokens, "reserved_usd": round(cost, 6),
+                    "reported_usage": usage,
+                },
             }
             write_json(summary_path, record)
             state["completed"][key] = str(summary_path)

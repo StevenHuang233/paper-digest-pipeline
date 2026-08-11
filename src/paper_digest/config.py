@@ -34,7 +34,7 @@ DEFAULTS: dict[str, Any] = {
             "research interest. Exclude incidental mentions, generic AI relevance, and insufficient evidence."
         ),
     },
-    "review": {"max_papers": 5},
+    "review": {"max_papers": 5, "max_attempts": 3},
     "backend": {
         "type": "openai_compatible", "base_url": "", "model": "", "api_key_env": "PAPER_DIGEST_API_KEY",
         "max_output_tokens": 5500, "temperature": 0.2, "timeout_seconds": 300, "codex_model": "",
@@ -131,6 +131,8 @@ def validate_config(config: dict[str, Any], *, require_backend: bool = True) -> 
         raise ValueError("selection.max_selected_papers must be >= 1")
     if int(config["review"]["max_papers"]) < 1:
         raise ValueError("review.max_papers must be >= 1")
+    if not 1 <= int(config["review"]["max_attempts"]) <= 5:
+        raise ValueError("review.max_attempts must be between 1 and 5")
     if int(config["selection"]["llm_batch_size"]) < 1:
         raise ValueError("selection.llm_batch_size must be >= 1")
     if int(config["selection"]["llm_abstract_chars"]) < 200:

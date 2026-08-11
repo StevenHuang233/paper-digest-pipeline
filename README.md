@@ -232,6 +232,10 @@ paper-digest email --config config.toml --result outputs\arxiv-YYYY-MM-DD\manife
 
 筛选阶段只发送标题、类别和截断摘要；只有最终总结目标才下载全文。`budget.max_total_tokens` 与 `budget.max_estimated_usd` 是硬门槛。请按实际服务商价格维护单价；单价为 0 时只执行 token 限制。
 
+## 全文总结重试
+
+`review.max_attempts` 控制单篇全文总结遇到接口错误、空响应或 JSON 字段缺失时的最大尝试次数，默认值为 `3`，允许范围为 `1`--`5`。只有某篇论文连续达到该次数仍失败时，任务才会将其记入 `failed_count` 并报告 `partial`。
+
 ## License
 
 本项目采用 [Apache License 2.0](LICENSE)。它允许商用、修改、再发布和私有使用，同时要求保留许可证与版权声明，并提供明确的专利授权。对于可能被集成、二次开发的 AI 工具项目，它比 MIT 多了一层清晰的专利保护。
