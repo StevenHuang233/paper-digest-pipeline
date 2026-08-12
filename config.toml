@@ -58,6 +58,7 @@ llm_batch_size = 40                    # 每次筛选请求包含的论文数
 llm_abstract_chars = 1600              # 每篇送入筛选模型的摘要字符上限
 llm_max_output_tokens = 4000           # 每批二元决策的最大输出 token
 llm_thinking_mode = "disabled"         # 筛选阶段关闭思考模式以降低成本
+llm_response_attempts = 3             # 筛选批次漏回论文 ID 时的内容级重试次数
 decision_rounds = 2                     # 独立判断轮数；出现分歧时自动追加最终裁决
 decision_shuffle_seed = "paper-digest-decision-v2" # 稳定乱序，避免批次与原始位置影响结论
 # 这是筛选的最终判定边界。模型返回 include/exclude、命中类别和证据，不进行分数排序。
@@ -110,6 +111,8 @@ api_key_env = "PAPER_DIGEST_API_KEY"  # 这里只写环境变量名，绝不能�
 max_output_tokens = 5500               # 单篇六段式总结最大输出 token
 temperature = 0.2
 timeout_seconds = 600
+request_attempts = 3                  # 单次 LLM 调用遇到超时、429、临时 5xx 或畸形响应时的重试次数
+request_backoff_seconds = 2.0         # LLM 重试退避基数；实际等待约 2、4、8……秒
 codex_model = ""                       # type=codex 时可指定模型，留空使用 Codex 默认值
 json_mode = true
 thinking_mode = "disabled"

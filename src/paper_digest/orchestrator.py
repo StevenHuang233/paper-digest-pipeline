@@ -76,6 +76,7 @@ def rank_and_select(
             decision_policy=str(config["selection"].get("decision_policy") or ""),
             decision_rounds=int(config["selection"].get("decision_rounds", 2)),
             decision_shuffle_seed=str(config["selection"].get("decision_shuffle_seed") or "paper-digest-decision-v2"),
+            response_attempts=int(config["selection"].get("llm_response_attempts", 3)),
             budget=budget,
         )
         selected = [paper for paper in ranked if paper.selection_decision == "include"]
@@ -131,6 +132,12 @@ def _completion_status(completed: int, target: int, *, fail_on_incomplete: bool)
 def run_pipeline(config: dict, config_path: Path, *, dry_run: bool = False, force: bool = False, papers_path: Path | None = None) -> dict:
     run_dir = job_directory(config)
     run_dir.mkdir(parents=True, exist_ok=True)
+    manifest_path = run_dir / "manifest.json"
+    progress_manifest = {
+        "status": "failure", "job_label": job_label(config),
+        "failure_stage": "discovery", "run_dir": str(run_dir),
+    }
+    write_json(manifest_path, progress_manifest)
     if papers_path:
         loaded = read_json(papers_path, [])
         records = loaded.get("papers", []) if isinstance(loaded, dict) else loaded
@@ -138,6 +145,12 @@ def run_pipeline(config: dict, config_path: Path, *, dry_run: bool = False, forc
     else:
         candidates = discover(config, config_path)
     candidate_limit = int(config["discovery"]["max_candidates"])
+    progress_manifest.update({
+        "candidate_count": len(candidates),
+        "candidate_limit_reached": len(candidates) >= candidate_limit,
+        "failure_stage": "selection",
+    })
+    write_json(manifest_path, progress_manifest)
     write_json(run_dir / "candidates.json", {
         "count": len(candidates), "limit": candidate_limit,
         "limit_reached": len(candidates) >= candidate_limit,
@@ -205,10 +218,18 @@ def run_pipeline(config: dict, config_path: Path, *, dry_run: bool = False, forc
             "review_limit": int(config["review"]["max_papers"]),
             "review_target_count": review_target_count, "run_dir": str(run_dir),
         }
-        write_json(run_dir / "manifest.json", manifest)
+        write_json(manifest_path, manifest)
         return manifest
 
     review_targets = selected[: int(config["review"]["max_papers"])]
+    progress_manifest.update({
+        "selected_count": len(selected),
+        "selected_limit_reached": len(selected) >= int(config["selection"]["max_selected_papers"]),
+        "selection_decisions": decision_counts,
+        "review_target_count": len(review_targets), "completed_count": 0,
+        "failed_count": 0, "failure_stage": "review",
+    })
+    write_json(manifest_path, progress_manifest)
     if review_targets and backend is None:
         backend = make_backend(config["backend"])
     summaries_dir = run_dir / "summaries"
@@ -219,6 +240,8 @@ def run_pipeline(config: dict, config_path: Path, *, dry_run: bool = False, forc
         summary_path = summaries_dir / f"{key}.json"
         if summary_path.exists() and not force:
             records.append(read_json(summary_path, {}))
+            progress_manifest["completed_count"] = len(records)
+            write_json(manifest_path, progress_manifest)
             continue
         if config["fulltext"]["download_pdf"]:
             text, evidence_level, evidence_note = download_and_extract(
@@ -259,14 +282,28 @@ def run_pipeline(config: dict, config_path: Path, *, dry_run: bool = False, forc
             state["completed"][key] = str(summary_path)
             state["failed"].pop(key, None)
             records.append(record)
+            progress_manifest.update({"completed_count": len(records), "failed_count": len(state["failed"])})
+            write_json(manifest_path, progress_manifest)
         except Exception as exc:
             state["failed"][key] = f"{type(exc).__name__}: {exc}"
             write_json(state_path, state)
+            progress_manifest.update({"completed_count": len(records), "failed_count": len(state["failed"])})
+            write_json(manifest_path, progress_manifest)
             if "budget exceeded" in str(exc).lower():
                 break
     state["budget"] = {"reserved_tokens": budget.reserved_tokens, "reserved_usd": round(budget.reserved_usd, 6)}
     write_json(state_path, state)
-    outputs = write_outputs(run_dir, records, list(config["output"]["formats"]), bool(config["output"]["compile_pdf"]))
+    progress_manifest.update({
+        "completed_count": len(records), "failed_count": len(state["failed"]),
+        "budget": state["budget"], "failure_stage": "output",
+    })
+    write_json(manifest_path, progress_manifest)
+    try:
+        outputs = write_outputs(run_dir, records, list(config["output"]["formats"]), bool(config["output"]["compile_pdf"]))
+    except Exception as exc:
+        progress_manifest["error"] = f"{type(exc).__name__}: {exc}"
+        write_json(manifest_path, progress_manifest)
+        raise
     manifest = {
         "status": _completion_status(
             len(records), len(review_targets),
@@ -280,5 +317,5 @@ def run_pipeline(config: dict, config_path: Path, *, dry_run: bool = False, forc
         "review_target_count": len(review_targets), "completed_count": len(records),
         "failed_count": len(state["failed"]), "budget": state["budget"], "outputs": outputs, "run_dir": str(run_dir),
     }
-    write_json(run_dir / "manifest.json", manifest)
+    write_json(manifest_path, manifest)
     return manifest

@@ -35,10 +35,10 @@ jobs:
 
     steps:
       - name: 检出仓库
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: 安装 Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           cache: pip
@@ -73,6 +73,15 @@ jobs:
           exit_code=${PIPESTATUS[0]}
           set -e
 
+          # A progressive manifest survives late failures such as PDF compilation.
+          # Recover it so failure emails still contain real counts and the stage.
+          if ! jq -e 'type == "object"' run-result.json >/dev/null 2>&1; then
+            manifest_file="$(find outputs -type f -name manifest.json -print -quit 2>/dev/null || true)"
+            if [[ -n "$manifest_file" ]]; then
+              cp "$manifest_file" run-result.json
+            fi
+          fi
+
           digest_status="failure"
           if [[ "$exit_code" -eq 0 ]] && jq -e . run-result.json >/dev/null 2>&1; then
             manifest_status="$(jq -r '.status // "failure"' run-result.json)"
@@ -103,11 +112,12 @@ jobs:
 
       - name: 上传生成结果和日志
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: paper-digest-${{ github.run_id }}
           path: |
             outputs/
+            !outputs/**/pdfs/**
             run-result.json
             run.log
           if-no-files-found: warn

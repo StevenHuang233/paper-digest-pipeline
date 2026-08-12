@@ -14,7 +14,7 @@ from paper_digest.emailer import build_message, read_result, resolve_smtp_settin
 from paper_digest.filtering import llm_prioritize, llm_rerank, rule_rank
 from paper_digest.fulltext import CUTOFF
 from paper_digest.models import Paper
-from paper_digest.outputs import latex_escape, render_latex, render_markdown, write_outputs
+from paper_digest.outputs import latex_escape, render_latex, render_markdown, sanitize_text, write_outputs
 from paper_digest.orchestrator import _completion_status, job_label, rank_and_select, run_pipeline
 from paper_digest.review_prompt import build_review_prompt
 from paper_digest.sources.arxiv import build_query, parse_feed, resolve_date
@@ -151,7 +151,26 @@ class SelectionTests(unittest.TestCase):
                 }]}, {}
 
         with self.assertRaisesRegex(RuntimeError, "omitted 1 of 2"):
-            llm_rerank(papers, {"interests": ["multimodal"]}, IncompleteRanker())
+            llm_rerank(papers, {"interests": ["multimodal"]}, IncompleteRanker(), response_attempts=1)
+
+    def test_llm_binary_decision_retries_an_incomplete_batch(self):
+        papers = [Paper(id="one", title="One"), Paper(id="two", title="Two")]
+
+        class RecoveringRanker:
+            calls = 0
+
+            def generate_json(self, system, prompt, **kwargs):
+                self.calls += 1
+                count = 1 if self.calls == 1 else 2
+                return {"decisions": [
+                    {"id": f"p{index:06d}", "decision": "exclude", "match_area": "none", "reason": "Not relevant."}
+                    for index in range(count)
+                ]}, {}
+
+        backend = RecoveringRanker()
+        result = llm_rerank(papers, {"interests": ["multimodal"]}, backend)
+        self.assertEqual(len(result), 2)
+        self.assertEqual(backend.calls, 2)
 
     def test_binary_only_selection_respects_configured_limit_and_source_order(self):
         papers = [Paper(id=f"paper-{index}", title=f"Paper {index}") for index in range(8)]
@@ -363,6 +382,30 @@ class BackendTests(unittest.TestCase):
         self.assertEqual(captured["payload"]["response_format"], {"type": "json_object"})
         self.assertEqual(captured["payload"]["thinking"], {"type": "disabled"})
 
+    def test_transient_model_api_failure_is_retried(self):
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def read(self):
+                return b'{"choices":[{"message":{"content":"{\\"ok\\":true}"}}]}'
+
+        config = {
+            "api_key_env": "PAPER_DIGEST_API_KEY", "base_url": "https://api.deepseek.com",
+            "model": "deepseek-v4-flash", "temperature": 0.2, "max_output_tokens": 100,
+            "timeout_seconds": 30, "request_attempts": 2, "request_backoff_seconds": 0,
+            "json_mode": True, "thinking_mode": "disabled", "supports_thinking_toggle": True,
+        }
+        with patch.dict(os.environ, {"PAPER_DIGEST_API_KEY": "test-only-key"}), patch(
+            "urllib.request.urlopen", side_effect=[TimeoutError("temporary timeout"), FakeResponse()]
+        ) as mocked_open:
+            value, _usage = OpenAICompatibleBackend(config).generate_json("JSON only", "Return JSON")
+        self.assertTrue(value["ok"])
+        self.assertEqual(mocked_open.call_count, 2)
+
 
 class EmailTests(unittest.TestCase):
     def _config(self):
@@ -567,12 +610,57 @@ class OutputTests(unittest.TestCase):
             self.assertTrue(Path(outputs["pdf"]).is_file())
             self.assertTrue((Path(temp) / "latex-error-first-pass.log").is_file())
 
+    def test_output_failure_preserves_progress_manifest(self):
+        config_path = Path(__file__).parent / "fixtures" / "dryrun.toml"
+        config, resolved = load_config(config_path)
+        config["fulltext"]["download_pdf"] = False
+        config["output"] = {"formats": ["latex"], "compile_pdf": True}
+
+        class FakeBackend:
+            def generate_json(self, system, prompt, **kwargs):
+                value = {
+                    key: f"Readable {key} paragraph."
+                    for key in ["background", "motivation", "idea", "method", "experiments", "conclusion"]
+                }
+                value.update({"evidence_level": "abstract", "limitations": ""})
+                return value, {}
+
+        with tempfile.TemporaryDirectory() as temp:
+            config["project"]["output_dir"] = temp
+            with patch("paper_digest.orchestrator.make_backend", return_value=FakeBackend()), patch(
+                "paper_digest.orchestrator.write_outputs", side_effect=RuntimeError("synthetic PDF failure")
+            ):
+                with self.assertRaisesRegex(RuntimeError, "synthetic PDF failure"):
+                    run_pipeline(config, resolved)
+            manifest = json.loads(next(Path(temp).glob("*/manifest.json")).read_text(encoding="utf-8"))
+        self.assertEqual(manifest["failure_stage"], "output")
+        self.assertEqual(manifest["completed_count"], 1)
+        self.assertIn("synthetic PDF failure", manifest["error"])
+
     def test_latex_escape_distinguishes_currency_from_math(self):
         rendered = latex_escape("cost $100/千条轨迹, then $1.36; model $β$ uses λ")
         self.assertIn(r"\$100/千条轨迹", rendered)
         self.assertIn(r"\$1.36", rendered)
         self.assertIn(r"$\beta$", rendered)
         self.assertIn(r"\ensuremath{\lambda}", rendered)
+
+    def test_model_control_characters_are_repaired_before_every_output(self):
+        self.assertEqual(sanitize_text("mean \bar{g}\x00"), r"mean \bar{g}")
+        record = {
+            "paper": {"title": "Paper", "url": "https://arxiv.org/abs/1", "authors": []},
+            "review": {
+                key: "平均梯度 \bar{g}，扰动为 δ。"
+                for key in ["background", "motivation", "idea", "method", "experiments", "conclusion"]
+            } | {"evidence_level": "fulltext", "limitations": ""},
+        }
+        with tempfile.TemporaryDirectory() as temp:
+            outputs = write_outputs(Path(temp), [record], ["json", "markdown", "latex"], False)
+            for path in outputs.values():
+                content = Path(path).read_text(encoding="utf-8")
+                self.assertNotIn("\x08", content)
+                self.assertNotIn("\x00", content)
+            self.assertIn(r"\bar{g}", Path(outputs["markdown"]).read_text(encoding="utf-8"))
+            self.assertIn(r"\ensuremath{\delta}", Path(outputs["latex"]).read_text(encoding="utf-8"))
 
     def test_latex_sections_do_not_duplicate_automatic_numbers(self):
         record = {

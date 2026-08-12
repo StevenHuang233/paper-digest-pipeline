@@ -122,6 +122,10 @@ def _summary_body(result: dict[str, Any], status: str, run_url: str) -> str:
         lines.append("提示：候选数量触及上限，可能还有论文未进入筛选。")
     if result.get("selected_limit_reached"):
         lines.append("提示：入选数量触及上限，部分 include 论文未进入保留列表。")
+    if result.get("failure_stage"):
+        lines.append(f"失败阶段：{result['failure_stage']}")
+    if result.get("error"):
+        lines.append(f"失败原因：{result['error']}")
     if run_url:
         lines.extend(["", f"GitHub Actions 运行详情：{run_url}"])
     lines.extend(["", "详细总结和运行日志见附件或 GitHub Actions Artifacts。"])

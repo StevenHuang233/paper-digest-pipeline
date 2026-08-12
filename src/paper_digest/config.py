@@ -25,6 +25,7 @@ DEFAULTS: dict[str, Any] = {
         "rules_preview_min_score": 0.0,
         "llm_batch_size": 40, "llm_abstract_chars": 1600,
         "llm_max_output_tokens": 4000, "llm_thinking_mode": "disabled",
+        "llm_response_attempts": 3,
         "decision_rounds": 2, "decision_shuffle_seed": "paper-digest-decision-v2",
         "llm_prioritize": False, "priority_batch_size": 50, "priority_local_buffer_ratio": 1.0,
         "priority_rounds": 3, "priority_shuffle_seed": "paper-digest-priority-v2",
@@ -39,6 +40,7 @@ DEFAULTS: dict[str, Any] = {
     "backend": {
         "type": "openai_compatible", "base_url": "", "model": "", "api_key_env": "PAPER_DIGEST_API_KEY",
         "max_output_tokens": 5500, "temperature": 0.2, "timeout_seconds": 300, "codex_model": "",
+        "request_attempts": 3, "request_backoff_seconds": 2.0,
         "json_mode": True, "thinking_mode": "", "supports_thinking_toggle": False,
     },
     "fulltext": {"download_pdf": True, "max_main_text_chars": 180000},
@@ -138,10 +140,16 @@ def validate_config(config: dict[str, Any], *, require_backend: bool = True) -> 
         raise ValueError("review.max_papers must be >= 1")
     if not 1 <= int(config["review"]["max_attempts"]) <= 5:
         raise ValueError("review.max_attempts must be between 1 and 5")
+    if not 1 <= int(config["backend"]["request_attempts"]) <= 10:
+        raise ValueError("backend.request_attempts must be between 1 and 10")
+    if float(config["backend"]["request_backoff_seconds"]) < 0:
+        raise ValueError("backend.request_backoff_seconds must be >= 0")
     if int(config["selection"]["llm_batch_size"]) < 1:
         raise ValueError("selection.llm_batch_size must be >= 1")
     if int(config["selection"]["llm_abstract_chars"]) < 200:
         raise ValueError("selection.llm_abstract_chars must be >= 200")
+    if not 1 <= int(config["selection"]["llm_response_attempts"]) <= 5:
+        raise ValueError("selection.llm_response_attempts must be between 1 and 5")
     if not 1 <= int(config["selection"]["decision_rounds"]) <= 5:
         raise ValueError("selection.decision_rounds must be between 1 and 5")
     if not str(config["selection"]["decision_shuffle_seed"]).strip():

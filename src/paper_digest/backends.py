@@ -6,6 +6,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -73,20 +74,32 @@ class OpenAICompatibleBackend:
         request = urllib.request.Request(url, data=data, method="POST", headers={
             "Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json", "Accept": "application/json",
         })
-        try:
-            with urllib.request.urlopen(request, timeout=int(self.config["timeout_seconds"])) as response:
-                result = json.loads(response.read().decode("utf-8"))
-        except urllib.error.HTTPError as exc:
-            detail = exc.read(2000).decode("utf-8", errors="replace")
-            raise RuntimeError(f"Model API HTTP {exc.code}: {detail}") from exc
-        content = result["choices"][0]["message"].get("content") or ""
-        if not content.strip():
-            raise RuntimeError("Model API returned empty JSON content")
-        usage = result.get("usage") or {}
-        return _extract_json(content), {
-            "input_tokens": int(usage.get("prompt_tokens") or 0),
-            "output_tokens": int(usage.get("completion_tokens") or 0),
-        }
+        attempts = int(self.config.get("request_attempts", 3))
+        backoff = float(self.config.get("request_backoff_seconds", 2.0))
+        retryable_statuses = {408, 429, 500, 502, 503, 504}
+        for attempt in range(1, attempts + 1):
+            try:
+                with urllib.request.urlopen(request, timeout=int(self.config["timeout_seconds"])) as response:
+                    result = json.loads(response.read().decode("utf-8"))
+                content = result["choices"][0]["message"].get("content") or ""
+                if not content.strip():
+                    raise ValueError("Model API returned empty JSON content")
+                value = _extract_json(content)
+                usage = result.get("usage") or {}
+                return value, {
+                    "input_tokens": int(usage.get("prompt_tokens") or 0),
+                    "output_tokens": int(usage.get("completion_tokens") or 0),
+                }
+            except urllib.error.HTTPError as exc:
+                detail = exc.read(2000).decode("utf-8", errors="replace")
+                if exc.code not in retryable_statuses or attempt >= attempts:
+                    raise RuntimeError(f"Model API HTTP {exc.code}: {detail}") from exc
+            except (urllib.error.URLError, TimeoutError, OSError, ValueError, KeyError, IndexError, TypeError) as exc:
+                if attempt >= attempts:
+                    raise RuntimeError(
+                        f"Model API request failed after {attempts} attempts: {type(exc).__name__}: {exc}"
+                    ) from exc
+            time.sleep(max(0.0, backoff) * (2 ** (attempt - 1)))
 
 
 class CodexBackend:

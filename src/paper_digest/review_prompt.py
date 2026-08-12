@@ -38,6 +38,8 @@ Evidence rules:
 - abstract: restrict claims to the abstract and explicitly disclose unavailable method/experiment detail.
 - metadata: do not infer the six parts from a title.
 - Preserve exact model, benchmark, and metric names when translation reduces precision.
+- Because the response is JSON, escape every LaTeX backslash as `\\\\` in the JSON source (for example,
+  write `\\\\bar{{g}}`, not `\\bar{{g}}`); Unicode math symbols are also acceptable.
 - Output strict JSON with keys background, motivation, idea, method, experiments, conclusion, evidence_level, limitations.
 
 Metadata:

@@ -4,6 +4,7 @@ import json
 import re
 import shutil
 import subprocess
+import unicodedata
 from pathlib import Path
 
 
@@ -15,6 +16,32 @@ SECTIONS = [
     ("experiments", "实验与说明 / Experiments and Interpretation"),
     ("conclusion", "结论 / Conclusion"),
 ]
+
+
+def sanitize_text(text: str) -> str:
+    """Remove characters that cannot safely cross JSON/Markdown/LaTeX boundaries.
+
+    A common model-output failure is an unescaped TeX command inside JSON: for
+    example ``\bar`` is decoded as a backspace followed by ``ar``. Reconstruct
+    the consumed command letter for backspace/form-feed, preserve ordinary
+    line breaks, and discard the remaining invisible control/format codepoints.
+    """
+    text = str(text).replace("\r\n", "\n").replace("\r", "\n")
+    text = text.replace("\x08", r"\b").replace("\x0c", r"\f")
+    return "".join(
+        char for char in text
+        if char in {"\n", "\t"} or not unicodedata.category(char).startswith("C")
+    )
+
+
+def _sanitize_value(value):
+    if isinstance(value, str):
+        return sanitize_text(value)
+    if isinstance(value, list):
+        return [_sanitize_value(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _sanitize_value(item) for key, item in value.items()}
+    return value
 
 
 def render_markdown(records: list[dict]) -> str:
@@ -40,10 +67,14 @@ def _latex_plain(text: str) -> str:
         "\\": r"\textbackslash{}", "&": r"\&", "%": r"\%", "$": r"\$", "#": r"\#",
         "_": r"\_\allowbreak{}", "{": r"\{", "}": r"\}", "~": r"\textasciitilde{}", "^": r"\textasciicircum{}",
         "α": r"\ensuremath{\alpha}", "β": r"\ensuremath{\beta}", "γ": r"\ensuremath{\gamma}",
-        "η": r"\ensuremath{\eta}", "θ": r"\ensuremath{\theta}", "λ": r"\ensuremath{\lambda}",
-        "π": r"\ensuremath{\pi}", "ρ": r"\ensuremath{\rho}", "τ": r"\ensuremath{\tau}",
-        "φ": r"\ensuremath{\phi}", "ψ": r"\ensuremath{\psi}", "ω": r"\ensuremath{\omega}",
-        "ζ": r"\ensuremath{\zeta}", "≥": r"\ensuremath{\geq}", "≤": r"\ensuremath{\leq}",
+        "δ": r"\ensuremath{\delta}", "ε": r"\ensuremath{\epsilon}", "ζ": r"\ensuremath{\zeta}",
+        "η": r"\ensuremath{\eta}", "θ": r"\ensuremath{\theta}", "κ": r"\ensuremath{\kappa}",
+        "λ": r"\ensuremath{\lambda}", "μ": r"\ensuremath{\mu}", "ν": r"\ensuremath{\nu}",
+        "ξ": r"\ensuremath{\xi}", "π": r"\ensuremath{\pi}", "ρ": r"\ensuremath{\rho}",
+        "σ": r"\ensuremath{\sigma}", "τ": r"\ensuremath{\tau}", "φ": r"\ensuremath{\phi}",
+        "χ": r"\ensuremath{\chi}", "ψ": r"\ensuremath{\psi}", "ω": r"\ensuremath{\omega}",
+        "Δ": r"\ensuremath{\Delta}", "Σ": r"\ensuremath{\Sigma}", "Ω": r"\ensuremath{\Omega}",
+        "≥": r"\ensuremath{\geq}", "≤": r"\ensuremath{\leq}",
         "∝": r"\ensuremath{\propto}", "⟨": r"\ensuremath{\langle}", "⟩": r"\ensuremath{\rangle}",
         "−": "-",
     }
@@ -52,9 +83,12 @@ def _latex_plain(text: str) -> str:
 
 def _latex_math(text: str) -> str:
     replacements = {
-        "α": r"\alpha", "β": r"\beta", "γ": r"\gamma", "η": r"\eta", "θ": r"\theta",
-        "λ": r"\lambda", "π": r"\pi", "ρ": r"\rho", "τ": r"\tau", "φ": r"\phi",
-        "ψ": r"\psi", "ω": r"\omega", "ζ": r"\zeta", "≥": r"\geq", "≤": r"\leq",
+        "α": r"\alpha", "β": r"\beta", "γ": r"\gamma", "δ": r"\delta", "ε": r"\epsilon",
+        "ζ": r"\zeta", "η": r"\eta", "θ": r"\theta", "κ": r"\kappa", "λ": r"\lambda",
+        "μ": r"\mu", "ν": r"\nu", "ξ": r"\xi", "π": r"\pi", "ρ": r"\rho",
+        "σ": r"\sigma", "τ": r"\tau", "φ": r"\phi", "χ": r"\chi", "ψ": r"\psi",
+        "ω": r"\omega", "Δ": r"\Delta", "Σ": r"\Sigma", "Ω": r"\Omega",
+        "≥": r"\geq", "≤": r"\leq",
         "∝": r"\propto", "⟨": r"\langle", "⟩": r"\rangle", "−": "-",
     }
     return "".join(replacements.get(char, char) for char in text)
@@ -236,6 +270,7 @@ def _clear_latex_build_files(run_dir: Path) -> None:
 def write_outputs(run_dir: Path, records: list[dict], formats: list[str], compile_pdf: bool) -> dict[str, str]:
     outputs: dict[str, str] = {}
     run_dir.mkdir(parents=True, exist_ok=True)
+    records = _sanitize_value(records)
     if "json" in formats:
         path = run_dir / "digest.json"
         path.write_text(json.dumps({"papers": records}, ensure_ascii=False, indent=2), encoding="utf-8")

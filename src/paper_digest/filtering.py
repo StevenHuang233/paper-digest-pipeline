@@ -111,7 +111,7 @@ def _stable_rotation(items: list, seed: str, round_number: int) -> list:
 def _decision_pass(
     eligible: list[tuple[int, Paper]], preferences: dict, backend, *, batch_size: int,
     abstract_chars: int, max_output_tokens: int, thinking_mode: str,
-    decision_policy: str, stage: str, budget=None,
+    decision_policy: str, stage: str, response_attempts: int = 3, budget=None,
 ) -> dict[int, tuple[str, str, str]]:
     results: dict[int, tuple[str, str, str]] = {}
     profile = {
@@ -154,34 +154,43 @@ User profile:
 
 Papers:
 {json.dumps(compact, ensure_ascii=False)}"""
-        if budget is not None:
-            budget.reserve(prompt, max_output_tokens)
-        response, _usage = backend.generate_json(
-            "You are a strict and position-invariant academic-paper relevance gate. Output JSON only.",
-            prompt, max_output_tokens=max_output_tokens, schema=_decision_schema(), thinking_mode=thinking_mode,
-        )
         expected = {f"p{index:06d}": index for index, _paper in batch}
-        seen: set[str] = set()
-        for item in response.get("decisions", []):
-            record_id = str(item.get("id") or "")
-            if record_id not in expected or record_id in seen:
-                continue
-            decision = str(item.get("decision") or "").strip().lower()
-            if decision not in {"include", "exclude"}:
-                continue
-            match_area = " ".join(str(item.get("match_area") or "none").split())
-            reason = " ".join(str(item.get("reason") or "LLM binary relevance decision").split())
-            if decision == "include" and match_area.lower() in {"", "none", "n/a", "na", "unmatched"}:
-                decision = "exclude"
-                match_area = "none"
-                reason = "No explicit configured policy area was identified."
-            elif decision == "exclude":
-                match_area = "none"
-            results[expected[record_id]] = (decision, match_area, reason)
-            seen.add(record_id)
-        missing = sorted(set(expected) - seen)
-        if missing:
-            raise RuntimeError(f"LLM ranking response omitted {len(missing)} of {len(expected)} papers in a batch")
+        for attempt in range(1, response_attempts + 1):
+            if budget is not None:
+                budget.reserve(prompt, max_output_tokens)
+            response, _usage = backend.generate_json(
+                "You are a strict and position-invariant academic-paper relevance gate. Output JSON only.",
+                prompt, max_output_tokens=max_output_tokens, schema=_decision_schema(), thinking_mode=thinking_mode,
+            )
+            batch_results: dict[int, tuple[str, str, str]] = {}
+            seen: set[str] = set()
+            for item in response.get("decisions", []):
+                record_id = str(item.get("id") or "")
+                if record_id not in expected or record_id in seen:
+                    continue
+                decision = str(item.get("decision") or "").strip().lower()
+                if decision not in {"include", "exclude"}:
+                    continue
+                match_area = " ".join(str(item.get("match_area") or "none").split())
+                reason = " ".join(str(item.get("reason") or "LLM binary relevance decision").split())
+                if decision == "include" and match_area.lower() in {"", "none", "n/a", "na", "unmatched"}:
+                    decision = "exclude"
+                    match_area = "none"
+                    reason = "No explicit configured policy area was identified."
+                elif decision == "exclude":
+                    match_area = "none"
+                batch_results[expected[record_id]] = (decision, match_area, reason)
+                seen.add(record_id)
+            missing = sorted(set(expected) - seen)
+            if not missing:
+                results.update(batch_results)
+                break
+            if attempt >= response_attempts:
+                raise RuntimeError(f"LLM ranking response omitted {len(missing)} of {len(expected)} papers in a batch")
+            prompt += (
+                f"\n\nRetry notice: the previous response omitted {len(missing)} required ids. "
+                "Return exactly one valid decision for every supplied id."
+            )
     return results
 
 
@@ -190,7 +199,7 @@ def llm_rerank(
     abstract_chars: int = 1600, max_output_tokens: int = 4000,
     thinking_mode: str = "disabled", decision_policy: str = "",
     decision_rounds: int = 1, decision_shuffle_seed: str = "paper-digest-decision-v2",
-    budget=None,
+    response_attempts: int = 3, budget=None,
 ) -> list[Paper]:
     """Make explicit decisions, rotating batches and adjudicating disagreements."""
     if decision_rounds < 1:
@@ -205,7 +214,8 @@ def llm_rerank(
             rotated_eligible, preferences, backend, batch_size=batch_size,
             abstract_chars=abstract_chars, max_output_tokens=max_output_tokens,
             thinking_mode=thinking_mode, decision_policy=decision_policy,
-            stage=f"independent decision pass {round_number + 1}/{decision_rounds}", budget=budget,
+            stage=f"independent decision pass {round_number + 1}/{decision_rounds}",
+            response_attempts=response_attempts, budget=budget,
         ))
 
     disagreements: list[tuple[int, Paper]] = []
@@ -224,7 +234,8 @@ def llm_rerank(
             preferences, backend, batch_size=batch_size, abstract_chars=abstract_chars,
             max_output_tokens=max_output_tokens, thinking_mode=thinking_mode,
             decision_policy=decision_policy,
-            stage="final adjudication for papers with conflicting independent decisions", budget=budget,
+            stage="final adjudication for papers with conflicting independent decisions",
+            response_attempts=response_attempts, budget=budget,
         )
 
     reranked: list[Paper] = []

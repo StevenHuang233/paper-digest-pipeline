@@ -236,9 +236,15 @@ paper-digest email --config config.toml --result outputs\arxiv-YYYY-MM-DD\manife
 
 `discovery.request_timeout_seconds` 控制单次 arXiv 请求超时，`discovery.request_attempts` 控制遇到超时、HTTP 429 或临时 5xx 错误时的最大尝试次数。默认分别为 `120` 秒和 `4` 次。
 
+`backend.request_attempts` 和 `backend.request_backoff_seconds` 控制单次 LLM 调用的网络级重试。超时、HTTP 429、临时 5xx、空响应或畸形 JSON 会按指数退避自动重试，默认最多 `3` 次。单篇总结还会继续受下节的内容级重试保护。
+
+`selection.llm_response_attempts` 控制筛选模型漏回论文 ID 或返回不完整批次时的内容级重试，默认最多 `3` 次。
+
 ## 全文总结重试
 
 `review.max_attempts` 控制单篇全文总结遇到接口错误、空响应或 JSON 字段缺失时的最大尝试次数，默认值为 `3`，允许范围为 `1`--`5`。`review.fail_on_incomplete = false` 时，只要至少生成一篇可用总结就会正常交付 PDF，同时邮件继续显示真实 `failed_count`；设为 `true` 可恢复严格的 `partial` 失败状态。
+
+写出 JSON、Markdown 和 LaTeX 前会统一清理模型偶发产生的不可见控制字符，并将常见希腊字母转换为稳定的 LaTeX 数学符号。若最终 PDF 编译仍失败，渐进式 `manifest.json` 会保留已完成的候选、筛选和总结计数，失败邮件会显示具体阶段与原因，而不是全部显示“未知”。
 
 ## License
 
