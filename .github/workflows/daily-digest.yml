@@ -112,7 +112,7 @@ jobs:
 
       - name: 上传生成结果和日志
         if: always()
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: paper-digest-${{ github.run_id }}
           path: |
