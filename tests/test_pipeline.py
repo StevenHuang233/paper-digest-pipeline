@@ -384,6 +384,7 @@ class EmailTests(unittest.TestCase):
             markdown.write_text("# Digest", encoding="utf-8")
             pdf.write_bytes(b"%PDF-test")
             result = {
+                "job_label": "arxiv-2026-08-10",
                 "candidate_count": 200, "selected_count": 12,
                 "review_target_count": 2, "completed_count": 2, "failed_count": 0,
                 "selection_decisions": {"include": 12, "exclude": 188, "hard_exclude": 0},
@@ -401,7 +402,10 @@ class EmailTests(unittest.TestCase):
             self.assertEqual(password, "test-app-password")
             self.assertEqual(recipients, ["one@example.com", "two@example.com"])
             self.assertIn("候选论文：200", message.get_body().get_content())
-            self.assertEqual(sorted(part.get_filename() for part in message.iter_attachments()), ["digest.md", "digest.pdf"])
+            self.assertEqual(
+                sorted(part.get_filename() for part in message.iter_attachments()),
+                ["digest-2026-08-10.pdf", "digest.md"],
+            )
 
     def test_smtp_ssl_is_mocked_and_password_is_not_returned(self):
         captured = {}

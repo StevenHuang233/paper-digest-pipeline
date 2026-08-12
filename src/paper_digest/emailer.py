@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import mimetypes
 import os
+import re
 import smtplib
 import ssl
 from email.message import EmailMessage
@@ -127,6 +128,13 @@ def _summary_body(result: dict[str, Any], status: str, run_url: str) -> str:
     return "\n".join(lines)
 
 
+def _attachment_filename(path: Path, result: dict[str, Any]) -> str:
+    if path.suffix.lower() != ".pdf":
+        return path.name
+    match = re.search(r"\d{4}-\d{2}-\d{2}", str(result.get("job_label") or ""))
+    return f"digest-{match.group(0)}.pdf" if match else path.name
+
+
 def build_message(
     config: dict[str, Any], result: dict[str, Any], *, status: str,
     run_url: str = "", log_path: str | Path | None = None,
@@ -172,7 +180,10 @@ def build_message(
             continue
         mime, _ = mimetypes.guess_type(path.name)
         maintype, subtype = (mime or "application/octet-stream").split("/", 1)
-        message.add_attachment(path.read_bytes(), maintype=maintype, subtype=subtype, filename=path.name)
+        message.add_attachment(
+            path.read_bytes(), maintype=maintype, subtype=subtype,
+            filename=_attachment_filename(path, result),
+        )
     return message, username, password, recipients
 
 
