@@ -1,15 +1,19 @@
 from __future__ import annotations
 
-import tempfile
-import unittest
+import argparse
+import datetime as dt
 import json
 import os
+import tempfile
+import unittest
 from pathlib import Path
 from unittest.mock import patch
+from zoneinfo import ZoneInfo
 
 from paper_digest.backends import OpenAICompatibleBackend
 from paper_digest.budget import Budget
-from paper_digest.config import load_config
+from paper_digest.cli import _overrides
+from paper_digest.config import load_config, validate_config
 from paper_digest.emailer import build_message, read_result, resolve_smtp_settings, send_digest_email
 from paper_digest.filtering import llm_prioritize, llm_rerank, rule_rank
 from paper_digest.fulltext import CUTOFF
@@ -17,7 +21,13 @@ from paper_digest.models import Paper
 from paper_digest.outputs import latex_escape, render_latex, render_markdown, sanitize_text, write_outputs
 from paper_digest.orchestrator import _completion_status, job_label, rank_and_select, run_pipeline
 from paper_digest.review_prompt import build_review_prompt
-from paper_digest.sources.arxiv import build_query, parse_feed, resolve_date
+from paper_digest.sources.arxiv import (
+    build_query,
+    build_range_query,
+    parse_feed,
+    resolve_date,
+    resolve_relative_window,
+)
 from paper_digest.sources.common import get_bytes
 from paper_digest.sources.crossref import parse_items, venue_similarity
 from paper_digest.sources.openreview import parse_notes
@@ -51,6 +61,46 @@ class ArxivTests(unittest.TestCase):
         self.assertIn("submittedDate:[202607280000 TO 202607282359]", query)
         self.assertIn("cat:cs.LG OR cat:cs.AI", query)
 
+    def test_relative_window_uses_local_boundaries_and_gmt_query(self):
+        discovery = {"window": {
+            "timezone": "Asia/Shanghai",
+            "start_days_ago": 2, "start_time": "12:00",
+            "end_days_ago": 1, "end_time": "12:00",
+        }}
+        now = dt.datetime(2026, 8, 16, 1, 30, tzinfo=dt.timezone.utc)
+        start, end = resolve_relative_window(discovery, now=now)
+
+        self.assertEqual(start, dt.datetime(2026, 8, 14, 4, 0, tzinfo=dt.timezone.utc))
+        self.assertEqual(end, dt.datetime(2026, 8, 15, 4, 0, tzinfo=dt.timezone.utc))
+        shanghai = ZoneInfo("Asia/Shanghai")
+        self.assertEqual(start.astimezone(shanghai).isoformat(), "2026-08-14T12:00:00+08:00")
+        self.assertEqual(end.astimezone(shanghai).isoformat(), "2026-08-15T12:00:00+08:00")
+        self.assertEqual(
+            build_range_query(start, end, []),
+            "submittedDate:[202608140400 TO 202608150359]",
+        )
+
+    def test_explicit_date_override_disables_relative_window(self):
+        config = {"discovery": {"date": "yesterday", "window": {"enabled": True}}}
+        args = argparse.Namespace(
+            date="2026-08-15", source=None, max_papers=None,
+            max_selected=None, backend=None,
+        )
+        _overrides(config, args)
+        self.assertEqual(config["discovery"]["date"], "2026-08-15")
+        self.assertFalse(config["discovery"]["window"]["enabled"])
+
+    def test_reversed_relative_window_is_rejected(self):
+        config, _ = load_config(Path(__file__).parent / "fixtures" / "dryrun.toml")
+        config["discovery"]["source"] = "arxiv"
+        config["discovery"]["window"].update({
+            "enabled": True,
+            "start_days_ago": 1,
+            "end_days_ago": 2,
+        })
+        with self.assertRaisesRegex(ValueError, "start must be earlier"):
+            validate_config(config, require_backend=False)
+
     def test_parse_feed(self):
         fixture = Path(__file__).parent / "fixtures" / "arxiv.xml"
         papers, total = parse_feed(fixture.read_bytes())
@@ -62,6 +112,19 @@ class ArxivTests(unittest.TestCase):
     def test_explicit_date_is_used_in_stable_job_label(self):
         config = {"discovery": {"source": "arxiv", "date": "2026-07-30"}}
         self.assertEqual(job_label(config), "arxiv-2026-07-30")
+
+    def test_relative_window_is_used_in_stable_job_label(self):
+        config = {"discovery": {
+            "source": "arxiv", "date": "yesterday", "window": {"enabled": True},
+        }}
+        with patch(
+            "paper_digest.orchestrator.relative_window_label",
+            return_value="2026-08-14-1200_to_2026-08-15-1200",
+        ):
+            self.assertEqual(
+                job_label(config),
+                "arxiv-2026-08-14-1200_to_2026-08-15-1200",
+            )
 
 
 class SelectionTests(unittest.TestCase):

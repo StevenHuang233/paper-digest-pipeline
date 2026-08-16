@@ -9,7 +9,7 @@ description = "Discover, rank, and synthesize arXiv or conference papers with a 
 readme = "README.md"
 license = {file = "LICENSE"}
 requires-python = ">=3.11"
-dependencies = []
+dependencies = ["tzdata>=2024.1; platform_system == 'Windows'"]
 
 [project.optional-dependencies]
 pdf = ["pypdf>=5.0"]

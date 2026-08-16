@@ -6,7 +6,7 @@ Use the repository-root `config.toml` as the only non-secret configuration sourc
 
 `discovery.source` accepts:
 
-- `arxiv`: reads `discovery.date`, preference categories, pagination, and the request delay. The official API uses GMT submission dates. Keep consecutive requests at least three seconds apart.
+- `arxiv`: normally reads `discovery.window`, which defines a recurring half-open local-time range `[start, end)` using an IANA timezone, day offsets, and `HH:MM` clocks. It converts both boundaries to GMT; because arXiv's minute-resolution range is inclusive, the query ends one minute before the configured exclusive endpoint. When the window is disabled, it reads `discovery.date`. An explicit `--date` disables the window for that run. Keep consecutive requests at least three seconds apart.
 - `crossref`: reads a conference/container title and optional publication-date range. No sign-up is required. Set `mailto` to enter Crossref's polite pool. Crossref metadata can be sparse, so missing abstracts or PDF links must remain explicitly missing until later source resolution.
 - `openreview`: reads `discovery.openreview.venue_id`. `status = "accepted"` queries notes whose final `venueid` matches the venue. `status = "all"` queries the submission invitation; set `submission_invitation` explicitly when venue metadata is unusual.
 - `json`: reads `discovery.json_path`, relative to the config file unless absolute.
@@ -44,7 +44,7 @@ Each job gets a stable directory under `project.output_dir` with `candidates.jso
 
 ## GitHub Actions and email
 
-Use `.github/workflows/daily-digest.yml` for unattended daily runs. GitHub cron expressions use UTC and must remain in workflow YAML because Actions cannot load a TOML file before scheduling a job. Keep all application defaults in `config.toml`; use workflow-dispatch inputs only as explicit one-run overrides. Add concurrency control so slow runs do not overlap, always upload outputs and logs, and mark partial generation or failed notification as a failed workflow.
+Use `.github/workflows/daily-digest.yml` for unattended daily runs. GitHub cron expressions use UTC and must remain in workflow YAML because Actions cannot load a TOML file before scheduling a job. The cron controls when processing starts; `discovery.window` independently controls which submission interval is queried. Keep all application defaults in `config.toml`; use workflow-dispatch inputs only as explicit one-run overrides. Add concurrency control so slow runs do not overlap, always upload outputs and logs, and mark partial generation or failed notification as a failed workflow.
 
 Store these values as repository Actions Secrets, never TOML values:
 

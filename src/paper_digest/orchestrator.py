@@ -12,7 +12,7 @@ from .models import Paper, SixPartReview
 from .outputs import write_outputs
 from .review_prompt import SYSTEM_PROMPT, build_review_prompt
 from .sources import fetch_arxiv, fetch_crossref, fetch_json, fetch_openreview
-from .sources.arxiv import resolve_date
+from .sources.arxiv import relative_window_label, resolve_date
 from .state import read_json, write_json
 
 
@@ -42,7 +42,10 @@ def job_label(config: dict) -> str:
     source = config["discovery"]["source"]
     discriminator = config["discovery"].get("date", "")
     if source == "arxiv":
-        discriminator = str(resolve_date(str(discriminator)))
+        if bool((config["discovery"].get("window") or {}).get("enabled", False)):
+            discriminator = relative_window_label(config["discovery"])
+        else:
+            discriminator = str(resolve_date(str(discriminator)))
     elif source == "openreview":
         discriminator = config["discovery"]["openreview"]["venue_id"]
     elif source == "crossref":

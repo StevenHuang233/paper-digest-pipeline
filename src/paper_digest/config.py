@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import copy
+import datetime as dt
 import os
+import re
 import tomllib
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 
 DEFAULTS: dict[str, Any] = {
@@ -14,6 +17,11 @@ DEFAULTS: dict[str, Any] = {
         "source": "arxiv", "date": "today", "max_candidates": 2000,
         "page_size": 200, "request_delay_seconds": 3.1,
         "request_timeout_seconds": 120, "request_attempts": 4, "json_path": "",
+        "window": {
+            "enabled": False, "timezone": "Asia/Shanghai",
+            "start_days_ago": 2, "start_time": "12:00",
+            "end_days_ago": 1, "end_time": "12:00",
+        },
         "openreview": {"venue_id": "", "status": "accepted", "submission_invitation": "", "base_url": "https://api2.openreview.net"},
         "crossref": {
             "conference": "", "from_date": "", "until_date": "", "mailto": "",
@@ -118,6 +126,44 @@ def validate_email_config(config: dict[str, Any]) -> None:
             raise ValueError("email.attach_pdf must be true when require_pdf_attachment is enabled")
 
 
+def _validate_arxiv_window(discovery: dict[str, Any]) -> None:
+    window = discovery["window"]
+    if not isinstance(window["enabled"], bool):
+        raise ValueError("discovery.window.enabled must be true or false")
+    if not window["enabled"]:
+        return
+    timezone_name = str(window["timezone"]).strip()
+    try:
+        ZoneInfo(timezone_name)
+    except (ZoneInfoNotFoundError, ValueError) as exc:
+        raise ValueError(f"Unknown discovery.window.timezone: {timezone_name}") from exc
+
+    days: dict[str, int] = {}
+    for field in ("start_days_ago", "end_days_ago"):
+        value = window[field]
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ValueError(f"discovery.window.{field} must be a non-negative integer")
+        days[field] = value
+
+    clocks: dict[str, dt.time] = {}
+    for field in ("start_time", "end_time"):
+        value = str(window[field])
+        if not re.fullmatch(r"\d{2}:\d{2}", value):
+            raise ValueError(f"discovery.window.{field} must use HH:MM 24-hour format")
+        try:
+            clocks[field] = dt.time.fromisoformat(value)
+        except ValueError as exc:
+            raise ValueError(f"discovery.window.{field} must use HH:MM 24-hour format") from exc
+
+    if days["start_days_ago"] < days["end_days_ago"]:
+        raise ValueError("discovery.window start must be earlier than its end")
+    if (
+        days["start_days_ago"] == days["end_days_ago"]
+        and clocks["start_time"] >= clocks["end_time"]
+    ):
+        raise ValueError("discovery.window start must be earlier than its end")
+
+
 def validate_config(config: dict[str, Any], *, require_backend: bool = True) -> None:
     source = config["discovery"]["source"]
     if source not in {"arxiv", "crossref", "openreview", "json"}:
@@ -128,6 +174,8 @@ def validate_config(config: dict[str, Any], *, require_backend: bool = True) -> 
         raise ValueError("discovery.crossref.conference is required")
     if source == "json" and not config["discovery"]["json_path"]:
         raise ValueError("discovery.json_path is required")
+    if source == "arxiv":
+        _validate_arxiv_window(config["discovery"])
     if int(config["discovery"]["max_candidates"]) < 1:
         raise ValueError("discovery.max_candidates must be >= 1")
     if int(config["discovery"]["request_timeout_seconds"]) < 1:

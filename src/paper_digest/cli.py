@@ -42,6 +42,7 @@ def _parser() -> argparse.ArgumentParser:
 def _overrides(config: dict, args: argparse.Namespace) -> None:
     if getattr(args, "date", None):
         config["discovery"]["date"] = args.date
+        config["discovery"]["window"]["enabled"] = False
     if getattr(args, "source", None):
         config["discovery"]["source"] = args.source
     if getattr(args, "max_papers", None):

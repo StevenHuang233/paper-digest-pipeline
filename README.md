@@ -19,7 +19,7 @@
 
 项目的所有非敏感参数都集中在带中文注释的 [`config.toml`](config.toml) 中。
 
-唯一例外是每日触发的 cron 时间：GitHub 必须在 workflow YAML 加载前读取它，因此不能从 TOML 动态取得，需在 `.github/workflows/daily-digest.yml` 的 `cron` 一行修改。论文源、偏好、数量、模型、预算、输出和邮件参数仍全部由 `config.toml` 管理。
+唯一例外是每日触发的 cron 时间：GitHub 必须在 workflow YAML 加载前读取它，因此不能从 TOML 动态取得，需在 `.github/workflows/daily-digest.yml` 的 `cron` 一行修改。论文时间区间、来源、偏好、数量、模型、预算、输出和邮件参数仍全部由 `config.toml` 管理。
 
 ```powershell
 python -m venv .venv
@@ -34,6 +34,8 @@ paper-digest run --config config.toml
 ```powershell
 paper-digest run --config config.toml --date 2026-07-30 --max-papers 10
 ```
+
+默认配置启用 `[discovery.window]`，每次按 `Asia/Shanghai` 计算 `[前天 12:00, 昨天 12:00)`，再把边界转换成 GMT 查询 arXiv。区间左闭右开；只要每天至少成功运行一次，相邻区间就不会在边界重复或漏掉论文。同一上海自然日内任务晚些启动只会晚些发送。`start_days_ago`、`start_time`、`end_days_ago`、`end_time` 和 `timezone` 都可修改。显式传入 `--date` 会仅在该次运行停用相对区间，改查指定的单个 GMT 日历日。
 
 零模型调用的规则预览：
 
@@ -75,7 +77,8 @@ priority_policy = """
 - `preferences.include_keywords`：缩写、别名、任务名和模型家族，只作正向提示。
 - `preferences.exclude_keywords`：不可撤销的硬排除，应尽量保守。
 - `preferences.categories`：arXiv 服务端检索类别；过窄会在 LLM 筛选前漏掉论文。
-- `discovery.date = "yesterday"`：每日任务推荐值。
+- `discovery.window`：定时任务的本地时区与相对起止时间；默认是上海时间 `[前天 12:00, 昨天 12:00)`。
+- `discovery.date`：关闭相对区间或显式传入 `--date` 时使用的单日模式。
 - `review.max_papers`：每次真正读取 PDF 并生成六段式总结的数量。
 - `email.provider`：选择 `qq`、`gmail` 或 `netease`，SMTP 地址、端口和加密方式会自动配置。
 
@@ -92,7 +95,8 @@ priority_policy = """
 | `preferences.exclude_keywords` | LLM 前的硬排除 | 只放百分之百不想看的短语，宁缺毋滥 |
 | `preferences.categories` | arXiv 服务端类别过滤 | 为保证召回率可覆盖 `cs.AI/cs.LG/cs.CL/cs.CV/cs.MM/cs.IR/cs.RO/stat.ML` |
 | `discovery.source` | 论文来源 | 每日 arXiv 用 `arxiv`；会议可用 `openreview`、`crossref` 或 `json` |
-| `discovery.date` | arXiv 提交日期 | 每日邮件固定用 `yesterday`，避免当天数据尚未完整 |
+| `discovery.window` | 定时抓取的相对时间区间 | `enabled = true` 时按配置时区计算 `[start, end)`，随后转为 GMT 查询 |
+| `discovery.date` | arXiv 单日查询 | 仅在 window 关闭或 `--date` 单次覆盖时使用 |
 | `discovery.max_candidates` | 最多进入筛选的论文数 | 完整扫描上限可设 2000；触顶时 manifest 会提示 |
 | `selection.max_selected_papers` | 最终最多保留数 | 无论是否启用二阶段精选都会生效 |
 | `selection.llm_batch_size` | 单次筛选请求论文数 | 40 是成本、输出长度和稳定性的折中值 |
@@ -198,7 +202,7 @@ provider = "netease"
 
 完成一次手动试跑后，按下面清单确认即可正式启用：
 
-1. `config.toml` 中设置 `discovery.date = "yesterday"` 和 `email.enabled = true`。
+1. `config.toml` 中设置 `discovery.window.enabled = true` 和 `email.enabled = true`，并确认时区与起止时间符合需要。
 2. 把 `review.max_papers` 从试跑的 1 调整为日常需要的数量，例如 10。
 3. 确认上述 4 个必需 Secrets 均已添加，SMTP 使用的是授权码/App Password。
 4. 确认仓库 `Actions` 页面没有显示 workflows 被禁用；若有提示，点击启用。
@@ -206,7 +210,7 @@ provider = "netease"
 
 默认发送时间为北京时间约 09:30。要改为北京时间每天 08:00，把 workflow 中 cron 改成 `0 0 * * *`；北京时间 = UTC + 8。修改后提交并推送到默认分支才会生效。
 
-邮件主题会包含状态、项目名和配置日期；正文列出候选数、include/exclude 数、计划/完成总结数和失败数。默认成功邮件只附按统一 LaTeX 模板编译的 `digest.pdf`，Markdown 仍保存在 Actions Artifact。启用 `require_pdf_attachment` 后，PDF 缺失或超限会明确报错，不再静默发送 Markdown 代替。
+邮件主题会包含状态、项目名和实际查询区间；正文列出候选数、include/exclude 数、计划/完成总结数和失败数。默认成功邮件只附按统一 LaTeX 模板编译的 `digest.pdf`，Markdown 仍保存在 Actions Artifact。启用 `require_pdf_attachment` 后，PDF 缺失或超限会明确报错，不再静默发送 Markdown 代替。
 
 ## 手动测试邮件
 
@@ -216,17 +220,17 @@ provider = "netease"
 $env:PAPER_DIGEST_SMTP_USERNAME = "sender@example.com"
 $env:PAPER_DIGEST_SMTP_PASSWORD = "邮箱授权码"
 $env:PAPER_DIGEST_EMAIL_TO = "receiver@example.com"
-paper-digest email --config config.toml --result outputs\arxiv-YYYY-MM-DD\manifest.json --status success
+paper-digest email --config config.toml --result outputs\arxiv-YYYY-MM-DD-HHMM_to_YYYY-MM-DD-HHMM\manifest.json --status success
 ```
 
 ## 来源与输出
 
-- `arxiv`：按提交日期和类别查询官方 Atom API。
+- `arxiv`：按提交时间区间（或手动指定的单日）和类别查询官方 Atom API。
 - `crossref`：按会议名和日期范围检索 proceedings 元数据。
 - `openreview`：按 venue ID 获取已接收或全部投稿。
 - `json`：读取规范化本地论文列表。
 
-每个任务目录包含 `candidates.json`、`selection-decisions.json`、`selected.json`、`state.json`、单篇检查点、PDF、`manifest.json` 和配置要求的 digest 文件。重复运行相同来源与日期时会复用已完成总结；使用 `--force` 才会重新生成。
+每个任务目录包含 `candidates.json`、`selection-decisions.json`、`selected.json`、`state.json`、单篇检查点、PDF、`manifest.json` 和配置要求的 digest 文件。重复运行相同来源与时间区间时会复用已完成总结；使用 `--force` 才会重新生成。
 
 ## 成本控制
 

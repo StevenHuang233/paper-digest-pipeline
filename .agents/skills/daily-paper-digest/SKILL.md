@@ -1,6 +1,6 @@
 ---
 name: daily-paper-digest
-description: "Discover arXiv papers for today or a specified date, retrieve conference papers through Crossref, OpenReview, or a normalized JSON proceedings export, filter them by a user's research preferences, and create budget-controlled six-part paper reviews with optional scheduled email delivery. Use when Codex is asked for a daily paper feed, conference-paper shortlist, research-interest alert, cheap-API paper digest, GitHub Actions literature scan, email paper alert, or one-to-many review run with either an OpenAI-compatible provider or Codex."
+description: "Discover arXiv papers for a configurable recurring time window or a specified date, retrieve conference papers through Crossref, OpenReview, or a normalized JSON proceedings export, filter them by a user's research preferences, and create budget-controlled six-part paper reviews with optional scheduled email delivery. Use when Codex is asked for a daily paper feed, conference-paper shortlist, research-interest alert, cheap-API paper digest, GitHub Actions literature scan, email paper alert, or one-to-many review run with either an OpenAI-compatible provider or Codex."
 ---
 
 # Daily Paper Digest
@@ -30,7 +30,7 @@ python .agents/skills/daily-paper-digest/scripts/run_digest.py run --config conf
 
 ## Source selection
 
-- Use `arxiv` for a daily or specified submission date. Accept `today`, `yesterday`, or `YYYY-MM-DD`.
+- Use `arxiv` with `discovery.window` for a recurring local-time half-open range `[start, end)`. The pipeline converts its boundaries to GMT for arXiv. An explicit `--date` disables the window for that run and accepts `today`, `yesterday`, or `YYYY-MM-DD`.
 - Use `crossref` for unattended proceedings discovery by conference name and publication-date range.
 - Use `openreview` for a venue ID such as `ICLR.cc/2026/Conference`. Prefer `accepted`; use `all` only when under-review submissions are intended.
 - Use `json` for non-OpenReview proceedings or a curated list. Read [references/configuration.md](references/configuration.md) before mapping unfamiliar metadata.

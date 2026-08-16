@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       date:
-        description: "可选：覆盖 config.toml 中的日期（today、yesterday 或 YYYY-MM-DD）"
+        description: "可选：单次停用相对时间区间，改查指定 GMT 日期（today、yesterday 或 YYYY-MM-DD）"
         required: false
         type: string
       max_papers:
