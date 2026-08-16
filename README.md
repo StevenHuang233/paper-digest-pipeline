@@ -35,12 +35,40 @@ paper-digest run --config config.toml
 paper-digest run --config config.toml --date 2026-07-30 --max-papers 10
 ```
 
-默认配置启用 `[discovery.window]`，每次按 `Asia/Shanghai` 计算 `[前天 12:00, 昨天 12:00)`，再把边界转换成 GMT 查询 arXiv。区间左闭右开；只要每天至少成功运行一次，相邻区间就不会在边界重复或漏掉论文。同一上海自然日内任务晚些启动只会晚些发送。`start_days_ago`、`start_time`、`end_days_ago`、`end_time` 和 `timezone` 都可修改。显式传入 `--date` 会仅在该次运行停用相对区间，改查指定的单个 GMT 日历日。
+### arXiv 定时时间窗口
+
+默认配置启用相对时间窗口：
+
+```toml
+[discovery.window]
+enabled = true
+timezone = "Asia/Shanghai"
+start_days_ago = 2
+start_time = "12:00"
+end_days_ago = 1
+end_time = "12:00"
+```
+
+它在每次运行时按配置时区计算半开区间 `[起点, 终点)`，再转换成 GMT 查询 arXiv。例如任务在 2026-08-16 运行时：
+
+- 上海时间范围：`[2026-08-14 12:00, 2026-08-15 12:00)`；
+- GMT 范围：`[2026-08-14 04:00, 2026-08-15 04:00)`；
+- arXiv 查询：`submittedDate:[202608140400 TO 202608150359]`。arXiv 的分钟范围包含终点，因此程序用 `03:59` 表示配置中的排他终点 `04:00`。
+
+cron 只决定任务何时启动，不决定抓取范围。同一上海自然日内即使 GitHub 排队延迟，计算出的范围仍相同；只要每天至少成功运行一次，相邻窗口就不会重叠或漏掉边界论文。如果某个上海自然日完全没有成功运行，下一次不会自动补抓缺失窗口，需要手动指定日期或临时调整窗口。时区可以改为 `America/New_York` 等 IANA 名称，程序始终会转换成 arXiv 使用的 GMT。
+
+显式传入 `--date` 会仅在该次运行停用相对窗口，改查指定的单个 GMT 日历日；不会修改 `config.toml`。
 
 零模型调用的规则预览：
 
 ```powershell
 paper-digest run --config config.toml --dry-run
+```
+
+运行本地测试：
+
+```powershell
+python -m unittest discover -s tests
 ```
 
 可选的二阶段价值精选：
@@ -186,7 +214,7 @@ provider = "netease"
 
 ### 4. 启用和测试
 
-打开仓库的 `Actions` 页面，选择 `Daily paper digest`，点击 `Run workflow`。第一次建议手动指定一个日期并把总结数量临时设为 1，确认模型调用、PDF 生成和邮件发送全部正常。验证通过后无需其他操作，计划任务会每天运行。
+打开仓库的 `Actions` 页面，选择 `Daily paper digest`，点击 `Run workflow`。第一次验证相对窗口时应把日期留空，并把总结数量临时设为 1；日志中的 `job_label` 应显示实际本地起止时间。若该窗口没有候选论文，流程仍会验证查询、PDF、邮件和 Artifact，但不会调用模型；可再指定一个确定有论文的日期，以 1 篇上限验证模型调用和全文总结。验证通过后无需其他操作，计划任务会每天运行。
 
 每次运行都会：
 
