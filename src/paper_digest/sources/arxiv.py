@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import sys
 import time
 import urllib.parse
 import xml.etree.ElementTree as ET
@@ -13,6 +14,7 @@ from .common import get_bytes
 
 ATOM = "{http://www.w3.org/2005/Atom}"
 ARXIV = "{http://arxiv.org/schemas/atom}"
+_RESOLVED_WINDOW = "_resolved_window_utc"
 
 
 def resolve_date(value: str, today: dt.date | None = None) -> dt.date:
@@ -37,6 +39,15 @@ def _minute_clock(value: str, field: str) -> dt.time:
 def resolve_relative_window(
     discovery: dict, *, now: dt.datetime | None = None,
 ) -> tuple[dt.datetime, dt.datetime]:
+    if now is None:
+        frozen = discovery.get(_RESOLVED_WINDOW)
+        if isinstance(frozen, list) and len(frozen) == 2:
+            start = dt.datetime.fromisoformat(str(frozen[0]))
+            end = dt.datetime.fromisoformat(str(frozen[1]))
+            if start.tzinfo is None or end.tzinfo is None or end <= start:
+                raise ValueError("Stored arXiv discovery window is invalid")
+            return start.astimezone(dt.timezone.utc), end.astimezone(dt.timezone.utc)
+
     window = discovery.get("window") or {}
     timezone_name = str(window.get("timezone") or "").strip()
     try:
@@ -57,6 +68,18 @@ def resolve_relative_window(
     if end_local <= start_local:
         raise ValueError("discovery.window end must be later than its start")
     return start_local.astimezone(dt.timezone.utc), end_local.astimezone(dt.timezone.utc)
+
+
+def freeze_relative_window(
+    discovery: dict, *, now: dt.datetime | None = None,
+) -> tuple[dt.datetime, dt.datetime]:
+    """Resolve a relative window once so labels and queries cannot cross a day boundary."""
+    if now is None and discovery.get(_RESOLVED_WINDOW):
+        return resolve_relative_window(discovery)
+    current = now or dt.datetime.now(dt.timezone.utc)
+    start, end = resolve_relative_window(discovery, now=current)
+    discovery[_RESOLVED_WINDOW] = [start.isoformat(), end.isoformat()]
+    return start, end
 
 
 def relative_window_label(
@@ -118,12 +141,46 @@ def parse_feed(payload: bytes) -> tuple[list[Paper], int]:
     return papers, total
 
 
+def _fetch_page(
+    url: str, getter: Callable[[str], bytes], *, attempts: int,
+    backoff_seconds: float, max_backoff_seconds: float,
+) -> tuple[list[Paper], int]:
+    """Retry successful HTTP responses that are not a usable Atom feed."""
+    for attempt in range(1, attempts + 1):
+        try:
+            return parse_feed(getter(url))
+        except (ET.ParseError, ValueError) as exc:
+            if attempt >= attempts:
+                raise RuntimeError(
+                    f"Invalid arXiv Atom response after {attempts} attempts: "
+                    f"{type(exc).__name__}: {exc}"
+                ) from exc
+            delay = min(
+                max(0.0, backoff_seconds) * (2 ** (attempt - 1)),
+                max(0.0, max_backoff_seconds),
+            )
+            print(
+                f"Invalid arXiv Atom response; retrying in {delay:.1f}s "
+                f"(attempt {attempt + 1}/{attempts})",
+                file=sys.stderr,
+                flush=True,
+            )
+            time.sleep(delay)
+
+
 def fetch_arxiv(config: dict, *, get: Callable[[str], bytes] | None = None) -> list[Paper]:
     discovery = config["discovery"]
+    request_attempts = int(discovery.get("request_attempts", 5))
+    request_backoff = float(discovery.get("request_backoff_seconds", 5.0))
+    rate_limit_backoff = float(discovery.get("request_rate_limit_seconds", 60.0))
+    max_backoff = float(discovery.get("request_max_backoff_seconds", 300.0))
     getter = get or (lambda url: get_bytes(
         url, accept="application/atom+xml",
         timeout=int(discovery.get("request_timeout_seconds", 120)),
-        attempts=int(discovery.get("request_attempts", 4)),
+        attempts=request_attempts,
+        backoff_seconds=request_backoff,
+        rate_limit_backoff_seconds=rate_limit_backoff,
+        max_backoff_seconds=max_backoff,
     ))
     categories = list(config["preferences"].get("categories") or [])
     if bool((discovery.get("window") or {}).get("enabled", False)):
@@ -143,7 +200,12 @@ def fetch_arxiv(config: dict, *, get: Callable[[str], bytes] | None = None) -> l
             "search_query": query, "start": start, "max_results": min(page_size, limit - len(papers)),
             "sortBy": "submittedDate", "sortOrder": "descending",
         })
-        batch, total = parse_feed(getter(f"https://export.arxiv.org/api/query?{params}"))
+        batch, total = _fetch_page(
+            f"https://export.arxiv.org/api/query?{params}", getter,
+            attempts=request_attempts,
+            backoff_seconds=request_backoff,
+            max_backoff_seconds=max_backoff,
+        )
         papers.extend(batch)
         if not batch:
             break

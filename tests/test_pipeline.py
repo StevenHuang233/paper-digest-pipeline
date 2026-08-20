@@ -6,7 +6,10 @@ import json
 import os
 import tempfile
 import unittest
+from email.message import Message
+from io import BytesIO
 from pathlib import Path
+from urllib.error import HTTPError
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
@@ -24,6 +27,8 @@ from paper_digest.review_prompt import build_review_prompt
 from paper_digest.sources.arxiv import (
     build_query,
     build_range_query,
+    fetch_arxiv,
+    freeze_relative_window,
     parse_feed,
     resolve_date,
     resolve_relative_window,
@@ -54,6 +59,67 @@ class ArxivTests(unittest.TestCase):
         self.assertEqual(mocked_open.call_count, 2)
         mocked_sleep.assert_called_once_with(0.01)
 
+    def test_rate_limit_honors_retry_after_before_recovering(self):
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def read(self):
+                return b"recovered"
+
+        headers = Message()
+        headers["Retry-After"] = "125"
+        rate_limit = HTTPError(
+            "https://example.test/feed", 429, "Rate exceeded", headers,
+            BytesIO(b"Rate exceeded."),
+        )
+        with patch(
+            "paper_digest.sources.common.urllib.request.urlopen",
+            side_effect=[rate_limit, FakeResponse()],
+        ), patch("paper_digest.sources.common.time.sleep") as mocked_sleep:
+            payload = get_bytes(
+                "https://example.test/feed", attempts=2,
+                backoff_seconds=5, rate_limit_backoff_seconds=60,
+                max_backoff_seconds=300,
+            )
+        self.assertEqual(payload, b"recovered")
+        mocked_sleep.assert_called_once_with(125.0)
+
+    def test_rate_limit_without_header_uses_long_fallback(self):
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def read(self):
+                return b"recovered"
+
+        rate_limit = HTTPError(
+            "https://example.test/feed", 429, "Rate exceeded", Message(),
+            BytesIO(b"Rate exceeded."),
+        )
+        with patch(
+            "paper_digest.sources.common.urllib.request.urlopen",
+            side_effect=[rate_limit, FakeResponse()],
+        ), patch("paper_digest.sources.common.time.sleep") as mocked_sleep:
+            get_bytes("https://example.test/feed", attempts=2)
+        mocked_sleep.assert_called_once_with(60.0)
+
+    def test_invalid_atom_response_is_retried(self):
+        config, _ = load_config(Path(__file__).parent / "fixtures" / "dryrun.toml")
+        config["discovery"].update({"source": "arxiv", "date": "2026-07-30"})
+        fixture = (Path(__file__).parent / "fixtures" / "arxiv.xml").read_bytes()
+        responses = iter([b"Rate exceeded.", fixture])
+        with patch("paper_digest.sources.arxiv.time.sleep") as mocked_sleep:
+            papers = fetch_arxiv(config, get=lambda _url: next(responses))
+        self.assertEqual([paper.id for paper in papers], ["2607.12345v1"])
+        mocked_sleep.assert_called_once_with(5.0)
+
     def test_date_and_query(self):
         date = resolve_date("2026-07-28")
         self.assertEqual(str(date), "2026-07-28")
@@ -78,6 +144,22 @@ class ArxivTests(unittest.TestCase):
         self.assertEqual(
             build_range_query(start, end, []),
             "submittedDate:[202608140400 TO 202608150359]",
+        )
+
+    def test_relative_window_is_frozen_for_one_pipeline_run(self):
+        discovery = {"window": {
+            "timezone": "Asia/Shanghai",
+            "start_days_ago": 2, "start_time": "12:00",
+            "end_days_ago": 1, "end_time": "12:00",
+        }}
+        frozen = freeze_relative_window(
+            discovery,
+            now=dt.datetime(2026, 8, 16, 15, 59, tzinfo=dt.timezone.utc),
+        )
+        self.assertEqual(resolve_relative_window(discovery), frozen)
+        self.assertEqual(
+            discovery["_resolved_window_utc"],
+            ["2026-08-14T04:00:00+00:00", "2026-08-15T04:00:00+00:00"],
         )
 
     def test_explicit_date_override_disables_relative_window(self):
@@ -542,6 +624,19 @@ class EmailTests(unittest.TestCase):
         self.assertEqual(captured["host"], "smtp.example.com")
         self.assertNotIn("secret-value", json.dumps(response))
 
+    def test_duplicate_recipients_are_sent_only_once(self):
+        env = {
+            "TEST_SMTP_USER": "sender@example.com", "TEST_SMTP_PASSWORD": "test-app-password",
+            "TEST_EMAIL_TO": "Receiver@example.com, receiver@example.com;other@example.com",
+            "TEST_EMAIL_FROM": "",
+        }
+        with patch.dict(os.environ, env, clear=False):
+            message, _username, _password, recipients = build_message(
+                self._config(), {}, status="failure",
+            )
+        self.assertEqual(recipients, ["Receiver@example.com", "other@example.com"])
+        self.assertEqual(message["To"], "Receiver@example.com, other@example.com")
+
     def test_invalid_or_missing_result_is_treated_as_empty(self):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "result.json"
@@ -699,6 +794,36 @@ class OutputTests(unittest.TestCase):
         self.assertEqual(manifest["failure_stage"], "output")
         self.assertEqual(manifest["completed_count"], 1)
         self.assertIn("synthetic PDF failure", manifest["error"])
+
+    def test_discovery_failure_preserves_the_actual_error(self):
+        config_path = Path(__file__).parent / "fixtures" / "dryrun.toml"
+        config, resolved = load_config(config_path)
+        with tempfile.TemporaryDirectory() as temp:
+            config["project"]["output_dir"] = temp
+            with patch(
+                "paper_digest.orchestrator.discover",
+                side_effect=RuntimeError("HTTP 429: Rate exceeded"),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "Rate exceeded"):
+                    run_pipeline(config, resolved)
+            manifest = json.loads(next(Path(temp).glob("*/manifest.json")).read_text(encoding="utf-8"))
+        self.assertEqual(manifest["failure_stage"], "discovery")
+        self.assertIn("HTTP 429: Rate exceeded", manifest["error"])
+
+    def test_selection_failure_is_also_written_to_the_manifest(self):
+        config_path = Path(__file__).parent / "fixtures" / "dryrun.toml"
+        config, resolved = load_config(config_path)
+        with tempfile.TemporaryDirectory() as temp:
+            config["project"]["output_dir"] = temp
+            with patch(
+                "paper_digest.orchestrator.rank_and_select",
+                side_effect=RuntimeError("selection backend unavailable"),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "backend unavailable"):
+                    run_pipeline(config, resolved)
+            manifest = json.loads(next(Path(temp).glob("*/manifest.json")).read_text(encoding="utf-8"))
+        self.assertEqual(manifest["failure_stage"], "selection")
+        self.assertIn("selection backend unavailable", manifest["error"])
 
     def test_latex_escape_distinguishes_currency_from_math(self):
         rendered = latex_escape("cost $100/千条轨迹, then $1.36; model $β$ uses λ")

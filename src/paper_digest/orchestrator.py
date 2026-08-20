@@ -12,7 +12,7 @@ from .models import Paper, SixPartReview
 from .outputs import write_outputs
 from .review_prompt import SYSTEM_PROMPT, build_review_prompt
 from .sources import fetch_arxiv, fetch_crossref, fetch_json, fetch_openreview
-from .sources.arxiv import relative_window_label, resolve_date
+from .sources.arxiv import freeze_relative_window, relative_window_label, resolve_date
 from .state import read_json, write_json
 
 
@@ -30,6 +30,8 @@ def deduplicate(papers: list[Paper]) -> list[Paper]:
 def discover(config: dict, config_path: Path) -> list[Paper]:
     source = config["discovery"]["source"]
     if source == "arxiv":
+        if bool((config["discovery"].get("window") or {}).get("enabled", False)):
+            freeze_relative_window(config["discovery"])
         return deduplicate(fetch_arxiv(config))
     if source == "openreview":
         return deduplicate(fetch_openreview(config))
@@ -132,21 +134,29 @@ def _completion_status(completed: int, target: int, *, fail_on_incomplete: bool)
     return "partial"
 
 
-def run_pipeline(config: dict, config_path: Path, *, dry_run: bool = False, force: bool = False, papers_path: Path | None = None) -> dict:
-    run_dir = job_directory(config)
+def _run_pipeline(
+    config: dict, config_path: Path, run_dir: Path, *, dry_run: bool = False,
+    force: bool = False, papers_path: Path | None = None,
+) -> dict:
     run_dir.mkdir(parents=True, exist_ok=True)
     manifest_path = run_dir / "manifest.json"
+    run_label = run_dir.name
     progress_manifest = {
-        "status": "failure", "job_label": job_label(config),
+        "status": "failure", "job_label": run_label,
         "failure_stage": "discovery", "run_dir": str(run_dir),
     }
     write_json(manifest_path, progress_manifest)
-    if papers_path:
-        loaded = read_json(papers_path, [])
-        records = loaded.get("papers", []) if isinstance(loaded, dict) else loaded
-        candidates = [Paper.from_dict(item) for item in records]
-    else:
-        candidates = discover(config, config_path)
+    try:
+        if papers_path:
+            loaded = read_json(papers_path, [])
+            records = loaded.get("papers", []) if isinstance(loaded, dict) else loaded
+            candidates = [Paper.from_dict(item) for item in records]
+        else:
+            candidates = discover(config, config_path)
+    except Exception as exc:
+        progress_manifest["error"] = f"{type(exc).__name__}: {exc}"
+        write_json(manifest_path, progress_manifest)
+        raise
     candidate_limit = int(config["discovery"]["max_candidates"])
     progress_manifest.update({
         "candidate_count": len(candidates),
@@ -214,7 +224,7 @@ def run_pipeline(config: dict, config_path: Path, *, dry_run: bool = False, forc
         review_target_count = min(len(selected), int(config["review"]["max_papers"]))
         manifest = {
             "status": "dry-run", "candidate_count": len(candidates), "selected_count": len(selected),
-            "job_label": job_label(config),
+            "job_label": run_label,
             "candidate_limit_reached": len(candidates) >= candidate_limit,
             "selected_limit_reached": len(selected) >= int(config["selection"]["max_selected_papers"]),
             "selection_decisions": decision_counts,
@@ -312,7 +322,7 @@ def run_pipeline(config: dict, config_path: Path, *, dry_run: bool = False, forc
             len(records), len(review_targets),
             fail_on_incomplete=bool(config["review"].get("fail_on_incomplete", False)),
         ),
-        "job_label": job_label(config),
+        "job_label": run_label,
         "candidate_count": len(candidates), "selected_count": len(selected),
         "candidate_limit_reached": len(candidates) >= candidate_limit,
         "selected_limit_reached": len(selected) >= int(config["selection"]["max_selected_papers"]),
@@ -322,3 +332,37 @@ def run_pipeline(config: dict, config_path: Path, *, dry_run: bool = False, forc
     }
     write_json(manifest_path, manifest)
     return manifest
+
+
+def run_pipeline(
+    config: dict, config_path: Path, *, dry_run: bool = False, force: bool = False,
+    papers_path: Path | None = None,
+) -> dict:
+    if (
+        config["discovery"]["source"] == "arxiv"
+        and bool((config["discovery"].get("window") or {}).get("enabled", False))
+    ):
+        freeze_relative_window(config["discovery"])
+    run_dir = job_directory(config)
+    manifest_path = run_dir / "manifest.json"
+    try:
+        return _run_pipeline(
+            config, config_path, run_dir, dry_run=dry_run,
+            force=force, papers_path=papers_path,
+        )
+    except Exception as exc:
+        try:
+            manifest = read_json(manifest_path, {})
+        except (OSError, json.JSONDecodeError):
+            manifest = {}
+        if not isinstance(manifest, dict):
+            manifest = {}
+        manifest.update({
+            "status": "failure",
+            "job_label": run_dir.name,
+            "run_dir": str(run_dir),
+            "error": f"{type(exc).__name__}: {exc}",
+        })
+        manifest.setdefault("failure_stage", "startup")
+        write_json(manifest_path, manifest)
+        raise

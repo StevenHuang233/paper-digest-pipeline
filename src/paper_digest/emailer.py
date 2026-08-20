@@ -46,7 +46,14 @@ def _env_required(name: str, field: str) -> str:
 
 
 def _recipients(raw: str) -> list[str]:
-    values = [item.strip() for item in raw.replace(";", ",").split(",") if item.strip()]
+    values: list[str] = []
+    seen: set[str] = set()
+    for item in raw.replace(";", ",").split(","):
+        value = item.strip()
+        key = value.casefold()
+        if value and key not in seen:
+            seen.add(key)
+            values.append(value)
     if not values:
         raise RuntimeError("No email recipients were configured")
     return values

@@ -16,7 +16,9 @@ DEFAULTS: dict[str, Any] = {
     "discovery": {
         "source": "arxiv", "date": "today", "max_candidates": 2000,
         "page_size": 200, "request_delay_seconds": 3.1,
-        "request_timeout_seconds": 120, "request_attempts": 4, "json_path": "",
+        "request_timeout_seconds": 120, "request_attempts": 5,
+        "request_backoff_seconds": 5.0, "request_rate_limit_seconds": 60.0,
+        "request_max_backoff_seconds": 300.0, "json_path": "",
         "window": {
             "enabled": False, "timezone": "Asia/Shanghai",
             "start_days_ago": 2, "start_time": "12:00",
@@ -178,10 +180,20 @@ def validate_config(config: dict[str, Any], *, require_backend: bool = True) -> 
         _validate_arxiv_window(config["discovery"])
     if int(config["discovery"]["max_candidates"]) < 1:
         raise ValueError("discovery.max_candidates must be >= 1")
+    if int(config["discovery"]["page_size"]) < 1:
+        raise ValueError("discovery.page_size must be >= 1")
+    if float(config["discovery"]["request_delay_seconds"]) < 0:
+        raise ValueError("discovery.request_delay_seconds must be >= 0")
     if int(config["discovery"]["request_timeout_seconds"]) < 1:
         raise ValueError("discovery.request_timeout_seconds must be >= 1")
     if not 1 <= int(config["discovery"]["request_attempts"]) <= 10:
         raise ValueError("discovery.request_attempts must be between 1 and 10")
+    for field in (
+        "request_backoff_seconds", "request_rate_limit_seconds",
+        "request_max_backoff_seconds",
+    ):
+        if float(config["discovery"][field]) < 0:
+            raise ValueError(f"discovery.{field} must be >= 0")
     if int(config["selection"]["max_selected_papers"]) < 1:
         raise ValueError("selection.max_selected_papers must be >= 1")
     if int(config["review"]["max_papers"]) < 1:
