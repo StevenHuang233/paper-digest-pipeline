@@ -32,6 +32,7 @@ from paper_digest.sources.arxiv import (
     parse_feed,
     resolve_date,
     resolve_relative_window,
+    set_explicit_window,
 )
 from paper_digest.sources.common import get_bytes
 from paper_digest.sources.crossref import parse_items, venue_similarity
@@ -162,10 +163,53 @@ class ArxivTests(unittest.TestCase):
             ["2026-08-14T04:00:00+00:00", "2026-08-15T04:00:00+00:00"],
         )
 
+    def test_explicit_window_uses_configured_timezone_and_stable_label(self):
+        config = {"discovery": {
+            "source": "arxiv", "date": "yesterday", "window": {
+                "enabled": True, "timezone": "Asia/Shanghai",
+            },
+        }}
+        args = argparse.Namespace(
+            date=None,
+            window_start="2026-08-17 12:00",
+            window_end="2026-08-18 12:00",
+            source=None, max_papers=None, max_selected=None, backend=None,
+        )
+        _overrides(config, args)
+        self.assertEqual(
+            resolve_relative_window(config["discovery"]),
+            (
+                dt.datetime(2026, 8, 17, 4, 0, tzinfo=dt.timezone.utc),
+                dt.datetime(2026, 8, 18, 4, 0, tzinfo=dt.timezone.utc),
+            ),
+        )
+        self.assertEqual(
+            job_label(config),
+            "arxiv-2026-08-17-1200_to_2026-08-18-1200",
+        )
+
+    def test_explicit_window_rejects_incomplete_or_reversed_values(self):
+        discovery = {"window": {"enabled": True, "timezone": "Asia/Shanghai"}}
+        with self.assertRaisesRegex(ValueError, "later than"):
+            set_explicit_window(
+                discovery, "2026-08-18 12:00", "2026-08-17 12:00",
+            )
+        config = {"discovery": {
+            "source": "arxiv", "date": "yesterday",
+            "window": {"enabled": True, "timezone": "Asia/Shanghai"},
+        }}
+        args = argparse.Namespace(
+            date=None, window_start="2026-08-17 12:00", window_end=None,
+            source=None, max_papers=None, max_selected=None, backend=None,
+        )
+        with self.assertRaisesRegex(ValueError, "provided together"):
+            _overrides(config, args)
+
     def test_explicit_date_override_disables_relative_window(self):
         config = {"discovery": {"date": "yesterday", "window": {"enabled": True}}}
         args = argparse.Namespace(
-            date="2026-08-15", source=None, max_papers=None,
+            date="2026-08-15", window_start=None, window_end=None,
+            source=None, max_papers=None,
             max_selected=None, backend=None,
         )
         _overrides(config, args)

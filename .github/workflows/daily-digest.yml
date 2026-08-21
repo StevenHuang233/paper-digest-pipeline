@@ -10,6 +10,14 @@ on:
         description: "可选：单次停用相对时间区间，改查指定 GMT 日期（today、yesterday 或 YYYY-MM-DD）"
         required: false
         type: string
+      window_start:
+        description: "可选：固定区间起点（按 config.toml 时区，如 2026-08-17 12:00；须与终点一起填写）"
+        required: false
+        type: string
+      window_end:
+        description: "可选：固定区间终点，不包含该时刻（如 2026-08-18 12:00；须与起点一起填写）"
+        required: false
+        type: string
       max_papers:
         description: "可选：覆盖本次全文总结数量；留空使用 config.toml"
         required: false
@@ -58,9 +66,22 @@ jobs:
         shell: bash
         env:
           OVERRIDE_DATE: ${{ inputs.date }}
+          OVERRIDE_WINDOW_START: ${{ inputs.window_start }}
+          OVERRIDE_WINDOW_END: ${{ inputs.window_end }}
           OVERRIDE_MAX_PAPERS: ${{ inputs.max_papers }}
         run: |
           args=(run --config config.toml)
+          if [[ -n "$OVERRIDE_DATE" && ( -n "$OVERRIDE_WINDOW_START" || -n "$OVERRIDE_WINDOW_END" ) ]]; then
+            echo "date cannot be combined with window_start/window_end" >&2
+            exit 2
+          fi
+          if [[ -n "$OVERRIDE_WINDOW_START" || -n "$OVERRIDE_WINDOW_END" ]]; then
+            if [[ -z "$OVERRIDE_WINDOW_START" || -z "$OVERRIDE_WINDOW_END" ]]; then
+              echo "window_start and window_end must be provided together" >&2
+              exit 2
+            fi
+            args+=(--window-start "$OVERRIDE_WINDOW_START" --window-end "$OVERRIDE_WINDOW_END")
+          fi
           if [[ -n "$OVERRIDE_DATE" ]]; then
             args+=(--date "$OVERRIDE_DATE")
           fi

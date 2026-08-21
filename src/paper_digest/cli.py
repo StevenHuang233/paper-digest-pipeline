@@ -8,6 +8,7 @@ from pathlib import Path
 from .config import load_config, validate_config, validate_email_config
 from .emailer import read_result, send_digest_email
 from .orchestrator import discover, job_directory, run_pipeline
+from .sources.arxiv import set_explicit_window
 from .state import write_json
 
 
@@ -20,6 +21,14 @@ def _parser() -> argparse.ArgumentParser:
         cmd = sub.add_parser(name)
         cmd.add_argument("--config", default="config.toml")
         cmd.add_argument("--date")
+        cmd.add_argument(
+            "--window-start",
+            help="Explicit arXiv interval start (YYYY-MM-DD HH:MM in the configured timezone, or ISO 8601)",
+        )
+        cmd.add_argument(
+            "--window-end",
+            help="Explicit arXiv interval end (exclusive; same format as --window-start)",
+        )
         cmd.add_argument("--source", choices=["arxiv", "crossref", "openreview", "json"])
         cmd.add_argument("--max-selected", type=int, help="Maximum papers retained after relevance filtering")
         cmd.add_argument("--max-papers", type=int, help="Maximum retained papers to summarize deeply")
@@ -40,11 +49,21 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def _overrides(config: dict, args: argparse.Namespace) -> None:
+    if getattr(args, "source", None):
+        config["discovery"]["source"] = args.source
+    window_start = getattr(args, "window_start", None)
+    window_end = getattr(args, "window_end", None)
+    if bool(window_start) != bool(window_end):
+        raise ValueError("--window-start and --window-end must be provided together")
+    if getattr(args, "date", None) and window_start:
+        raise ValueError("--date cannot be combined with --window-start/--window-end")
+    if window_start:
+        if config["discovery"]["source"] != "arxiv":
+            raise ValueError("--window-start/--window-end are only supported for arXiv")
+        set_explicit_window(config["discovery"], window_start, window_end)
     if getattr(args, "date", None):
         config["discovery"]["date"] = args.date
         config["discovery"]["window"]["enabled"] = False
-    if getattr(args, "source", None):
-        config["discovery"]["source"] = args.source
     if getattr(args, "max_papers", None):
         config["review"]["max_papers"] = args.max_papers
     if getattr(args, "max_selected", None):

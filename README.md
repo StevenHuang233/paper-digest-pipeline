@@ -35,6 +35,12 @@ paper-digest run --config config.toml
 paper-digest run --config config.toml --date 2026-07-30 --max-papers 10
 ```
 
+补跑一个固定的本地时间区间（不修改 `config.toml`，终点不包含）：
+
+```powershell
+paper-digest run --config config.toml --window-start "2026-08-17 12:00" --window-end "2026-08-18 12:00"
+```
+
 ### arXiv 定时时间窗口
 
 默认配置启用相对时间窗口：
@@ -58,6 +64,8 @@ end_time = "12:00"
 cron 只决定任务何时启动，不决定抓取范围。同一上海自然日内即使 GitHub 排队延迟，计算出的范围仍相同；只要每天至少成功运行一次，相邻窗口就不会重叠或漏掉边界论文。如果某个上海自然日完全没有成功运行，下一次不会自动补抓缺失窗口，需要手动指定日期或临时调整窗口。时区可以改为 `America/New_York` 等 IANA 名称，程序始终会转换成 arXiv 使用的 GMT。
 
 显式传入 `--date` 会仅在该次运行停用相对窗口，改查指定的单个 GMT 日历日；不会修改 `config.toml`。
+
+显式传入成对的 `--window-start` 和 `--window-end` 会固定本次 arXiv 半开区间。没有写 UTC 偏移时，两者按 `discovery.window.timezone` 解释；也可传入带偏移的 ISO 8601 时间。固定区间优先于运行当天日期，因此适合准确补跑缺失任务。它不能与 `--date` 同时使用。
 
 零模型调用的规则预览：
 
@@ -221,7 +229,7 @@ provider = "netease"
 
 ### 4. 启用和测试
 
-打开仓库的 `Actions` 页面，选择 `Daily paper digest`，点击 `Run workflow`。第一次验证相对窗口时应把日期留空，并把总结数量临时设为 1；日志中的 `job_label` 应显示实际本地起止时间。若该窗口没有候选论文，流程仍会验证查询、PDF、邮件和 Artifact，但不会调用模型；可再指定一个确定有论文的日期，以 1 篇上限验证模型调用和全文总结。验证通过后无需其他操作，计划任务会每天运行。
+打开仓库的 `Actions` 页面，选择 `Daily paper digest`，点击 `Run workflow`。第一次验证相对窗口时应把日期和固定区间都留空，并把总结数量临时设为 1；日志中的 `job_label` 应显示实际本地起止时间。若需补跑某个遗漏窗口，应同时填写 `window_start` 和 `window_end`（例如 `2026-08-17 12:00` 与 `2026-08-18 12:00`），并将 `date` 留空。若该窗口没有候选论文，流程仍会验证查询、PDF、邮件和 Artifact，但不会调用模型；可再指定一个确定有论文的日期，以 1 篇上限验证模型调用和全文总结。验证通过后无需其他操作，计划任务会每天运行。
 
 每次运行都会：
 

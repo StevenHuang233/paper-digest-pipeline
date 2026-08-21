@@ -70,6 +70,38 @@ def resolve_relative_window(
     return start_local.astimezone(dt.timezone.utc), end_local.astimezone(dt.timezone.utc)
 
 
+def set_explicit_window(
+    discovery: dict, start_value: str, end_value: str,
+) -> tuple[dt.datetime, dt.datetime]:
+    """Freeze an explicit interval, interpreting naive values in the configured timezone."""
+    timezone_name = str((discovery.get("window") or {}).get("timezone") or "").strip()
+    try:
+        timezone = ZoneInfo(timezone_name)
+    except (ZoneInfoNotFoundError, ValueError) as exc:
+        raise ValueError(f"Unknown discovery.window.timezone: {timezone_name}") from exc
+
+    def parse(value: str, field: str) -> dt.datetime:
+        try:
+            parsed = dt.datetime.fromisoformat(value.strip())
+        except ValueError as exc:
+            raise ValueError(
+                f"{field} must use YYYY-MM-DD HH:MM or an ISO 8601 datetime"
+            ) from exc
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone)
+        if parsed.second or parsed.microsecond:
+            raise ValueError(f"{field} must use minute precision")
+        return parsed.astimezone(dt.timezone.utc)
+
+    start = parse(start_value, "window start")
+    end = parse(end_value, "window end")
+    if end <= start:
+        raise ValueError("window end must be later than window start")
+    discovery.setdefault("window", {})["enabled"] = True
+    discovery[_RESOLVED_WINDOW] = [start.isoformat(), end.isoformat()]
+    return start, end
+
+
 def freeze_relative_window(
     discovery: dict, *, now: dt.datetime | None = None,
 ) -> tuple[dt.datetime, dt.datetime]:
