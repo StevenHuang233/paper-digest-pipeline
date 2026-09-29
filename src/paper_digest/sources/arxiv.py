@@ -15,6 +15,7 @@ from .common import get_bytes
 ATOM = "{http://www.w3.org/2005/Atom}"
 ARXIV = "{http://arxiv.org/schemas/atom}"
 _RESOLVED_WINDOW = "_resolved_window_utc"
+ATOM_ACCEPT = "application/atom+xml, application/xml;q=0.9, text/xml;q=0.8, */*;q=0.5"
 
 
 def resolve_date(value: str, today: dt.date | None = None) -> dt.date:
@@ -207,7 +208,7 @@ def fetch_arxiv(config: dict, *, get: Callable[[str], bytes] | None = None) -> l
     rate_limit_backoff = float(discovery.get("request_rate_limit_seconds", 60.0))
     max_backoff = float(discovery.get("request_max_backoff_seconds", 300.0))
     getter = get or (lambda url: get_bytes(
-        url, accept="application/atom+xml",
+        url, accept=ATOM_ACCEPT,
         timeout=int(discovery.get("request_timeout_seconds", 120)),
         attempts=request_attempts,
         backoff_seconds=request_backoff,

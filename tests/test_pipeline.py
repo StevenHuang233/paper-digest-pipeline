@@ -111,6 +111,50 @@ class ArxivTests(unittest.TestCase):
             get_bytes("https://example.test/feed", attempts=2)
         mocked_sleep.assert_called_once_with(60.0)
 
+    def test_not_acceptable_is_retried_with_relaxed_accept(self):
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def read(self):
+                return b"recovered"
+
+        seen_accept: list[str] = []
+        not_acceptable = HTTPError(
+            "https://example.test/feed", 406, "Not Acceptable", Message(), BytesIO(b""),
+        )
+        outcomes = iter([not_acceptable, FakeResponse()])
+
+        def fake_urlopen(request, timeout):
+            seen_accept.append(request.get_header("Accept"))
+            outcome = next(outcomes)
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+
+        with patch(
+            "paper_digest.sources.common.urllib.request.urlopen", fake_urlopen,
+        ), patch("paper_digest.sources.common.time.sleep") as mocked_sleep:
+            payload = get_bytes(
+                "https://example.test/feed", accept="application/atom+xml",
+                attempts=2, backoff_seconds=1,
+            )
+        self.assertEqual(payload, b"recovered")
+        self.assertEqual(seen_accept, ["application/atom+xml", "*/*"])
+        mocked_sleep.assert_called_once_with(1)
+
+    def test_empty_http_error_body_reports_reason(self):
+        not_acceptable = HTTPError(
+            "https://example.test/feed", 406, "Not Acceptable", Message(), BytesIO(b""),
+        )
+        with patch(
+            "paper_digest.sources.common.urllib.request.urlopen", side_effect=not_acceptable,
+        ), self.assertRaisesRegex(RuntimeError, r"HTTP 406 .*Not Acceptable"):
+            get_bytes("https://example.test/feed", attempts=1)
+
     def test_invalid_atom_response_is_retried(self):
         config, _ = load_config(Path(__file__).parent / "fixtures" / "dryrun.toml")
         config["discovery"].update({"source": "arxiv", "date": "2026-07-30"})

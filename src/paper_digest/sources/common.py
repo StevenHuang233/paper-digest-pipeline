@@ -59,15 +59,22 @@ def get_bytes(
     if backoff_seconds < 0 or rate_limit_backoff_seconds < 0 or max_backoff_seconds < 0:
         raise ValueError("retry delays must be non-negative")
     request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept": accept})
-    retryable_statuses = {408, 429, 500, 502, 503, 504}
+    # 406 is content negotiation: relax Accept to */* and retry, since some CDN
+    # edges intermittently reject strict media types with an empty body.
+    retryable_statuses = {406, 408, 429, 500, 502, 503, 504}
     for attempt in range(1, attempts + 1):
         try:
             with urllib.request.urlopen(request, timeout=timeout) as response:
                 return response.read()
         except urllib.error.HTTPError as exc:
             if exc.code not in retryable_statuses or attempt >= attempts:
-                detail = exc.read(1000).decode("utf-8", errors="replace")
+                detail = exc.read(1000).decode("utf-8", errors="replace").strip()
+                if not detail:
+                    detail = f"{exc.reason or 'empty response body'} (Accept: {request.get_header('Accept')})"
                 raise RuntimeError(f"HTTP {exc.code} for {url}: {detail}") from exc
+            if exc.code == 406:
+                request.remove_header("Accept")
+                request.add_header("Accept", "*/*")
             ordinary_delay = backoff_seconds * (2 ** (attempt - 1))
             retry_after = _retry_after_seconds(exc.headers)
             if exc.code == 429:
