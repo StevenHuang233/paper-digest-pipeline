@@ -138,8 +138,8 @@ priority_policy = """
 | `discovery.window` | 定时抓取的相对时间区间 | `enabled = true` 时按配置时区计算 `[start, end)`，随后转为 GMT 查询 |
 | `discovery.date` | arXiv 单日查询 | 仅在 window 关闭或 `--date` 单次覆盖时使用 |
 | `discovery.max_candidates` | 最多进入筛选的论文数 | 完整扫描上限可设 2000；触顶时 manifest 会提示 |
-| `discovery.request_attempts` | arXiv 网络与响应重试次数 | 默认 5 次；同时覆盖超时、406/429/5xx 和临时畸形 Atom 响应 |
-| `discovery.request_rate_limit_seconds` | arXiv 429 的首次等待时间 | 默认 60 秒，后续指数增长；在等待上限内优先遵守 `Retry-After` |
+| `discovery.request_attempts` | arXiv 网络与响应重试次数 | 默认每种请求形式 5 次；覆盖超时、406/429/5xx 和无效 Atom 响应 |
+| `discovery.request_rate_limit_seconds` | arXiv 406/429 的首次等待时间 | 默认 60 秒，后续指数增长；在等待上限内优先遵守 `Retry-After` |
 | `discovery.request_max_backoff_seconds` | 单次重试等待上限 | 默认 300 秒，避免共享出口持续限流时高频重试 |
 | `selection.max_selected_papers` | 最终最多保留数 | 无论是否启用二阶段精选都会生效 |
 | `selection.llm_batch_size` | 单次筛选请求论文数 | 40 是成本、输出长度和稳定性的折中值 |
@@ -281,7 +281,11 @@ paper-digest email --config config.toml --result outputs\arxiv-YYYY-MM-DD-HHMM_t
 
 ## 网络请求重试
 
-`discovery.request_timeout_seconds` 控制单次 arXiv 请求超时，`discovery.request_attempts` 控制遇到超时、HTTP 406/429、临时 5xx 或不可解析 Atom 响应时的最大尝试次数（406 重试时会自动把 `Accept` 放宽为 `*/*`）。默认分别为 `120` 秒和 `5` 次。普通错误从 `discovery.request_backoff_seconds = 5` 秒开始指数退避；429 从 `discovery.request_rate_limit_seconds = 60` 秒开始，并在等待上限内优先遵守服务器返回的 `Retry-After`。单次等待由 `discovery.request_max_backoff_seconds = 300` 秒封顶。每次重试都会写入 `run.log`，便于区分临时限流与永久故障。
+`discovery.request_timeout_seconds` 控制单次 arXiv 请求超时，`discovery.request_attempts` 控制遇到超时、HTTP 406/429、临时 5xx 或无效 Atom 响应时，每种请求形式的最大尝试次数。默认分别为 `120` 秒和 `5` 次。普通错误从 `discovery.request_backoff_seconds = 5` 秒开始指数退避；406/429 采用保守的慢速退避，从 `discovery.request_rate_limit_seconds = 60` 秒开始，并在等待上限内优先遵守服务器返回的 `Retry-After`。单次等待由 `discovery.request_max_backoff_seconds = 300` 秒封顶。每次重试都会写入 `run.log`。
+
+arXiv 请求优先接受 Atom，同时允许 XML 和通配格式；遇到可重试的 406 时，将 `Accept` 放宽为 `*/*`。同一请求仍持续返回 406 时，依次尝试等价的空格编码和最多 100 条的较小分页，保持原查询时间、类别和排序不变。缩页成功后，后续页沿用较小页大小，偏移量按实际返回条数递增。XML 错误页、Atom 错误条目及缺少必要元数据不会被当成成功；声明还有结果却返回空页时，明确报告不完整响应。
+
+这些措施不能保证解除 arXiv 的持续限流或服务故障。所有尝试失败时，任务仍报告 discovery 失败，不切换至时间语义不同的备用来源，也不把失败伪装成零候选。可在上游恢复后，用 `window_start` / `window_end` 固定原时间区间补跑。
 
 `backend.request_attempts` 和 `backend.request_backoff_seconds` 控制单次 LLM 调用的网络级重试。超时、HTTP 429、临时 5xx、空响应或畸形 JSON 会按指数退避自动重试，默认最多 `3` 次。单篇总结还会继续受下节的内容级重试保护。
 

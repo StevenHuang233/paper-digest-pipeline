@@ -6,6 +6,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from collections.abc import Collection
 from email.utils import parsedate_to_datetime
 from typing import Any
 
@@ -53,22 +54,26 @@ def get_bytes(
     attempts: int = 3, backoff_seconds: float = 2.0,
     rate_limit_backoff_seconds: float = 60.0,
     max_backoff_seconds: float = 300.0,
+    extra_retryable_statuses: Collection[int] = (),
+    extra_rate_limit_statuses: Collection[int] = (),
 ) -> bytes:
     if attempts < 1:
         raise ValueError("attempts must be at least 1")
     if backoff_seconds < 0 or rate_limit_backoff_seconds < 0 or max_backoff_seconds < 0:
         raise ValueError("retry delays must be non-negative")
     request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept": accept})
-    # 406 is content negotiation: relax Accept to */* and retry, since some CDN
-    # edges intermittently reject strict media types with an empty body.
-    retryable_statuses = {406, 408, 429, 500, 502, 503, 504}
+    retryable_statuses = {408, 429, 500, 502, 503, 504}
+    retryable_statuses.update(extra_retryable_statuses)
+    rate_limit_statuses = {429}
+    rate_limit_statuses.update(extra_rate_limit_statuses)
     for attempt in range(1, attempts + 1):
         try:
             with urllib.request.urlopen(request, timeout=timeout) as response:
                 return response.read()
         except urllib.error.HTTPError as exc:
             if exc.code not in retryable_statuses or attempt >= attempts:
-                detail = exc.read(1000).decode("utf-8", errors="replace").strip()
+                with exc:
+                    detail = exc.read(1000).decode("utf-8", errors="replace").strip()
                 if not detail:
                     detail = f"{exc.reason or 'empty response body'} (Accept: {request.get_header('Accept')})"
                 raise RuntimeError(f"HTTP {exc.code} for {url}: {detail}") from exc
@@ -77,7 +82,8 @@ def get_bytes(
                 request.add_header("Accept", "*/*")
             ordinary_delay = backoff_seconds * (2 ** (attempt - 1))
             retry_after = _retry_after_seconds(exc.headers)
-            if exc.code == 429:
+            exc.close()
+            if exc.code in rate_limit_statuses:
                 rate_limit_delay = rate_limit_backoff_seconds * (2 ** (attempt - 1))
                 delay = max(ordinary_delay, rate_limit_delay, retry_after or 0.0)
             else:

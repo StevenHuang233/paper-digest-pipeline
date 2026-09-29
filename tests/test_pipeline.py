@@ -140,7 +140,7 @@ class ArxivTests(unittest.TestCase):
         ), patch("paper_digest.sources.common.time.sleep") as mocked_sleep:
             payload = get_bytes(
                 "https://example.test/feed", accept="application/atom+xml",
-                attempts=2, backoff_seconds=1,
+                attempts=2, backoff_seconds=1, extra_retryable_statuses=(406,),
             )
         self.assertEqual(payload, b"recovered")
         self.assertEqual(seen_accept, ["application/atom+xml", "*/*"])

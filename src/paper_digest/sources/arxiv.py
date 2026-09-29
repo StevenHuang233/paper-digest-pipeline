@@ -149,11 +149,25 @@ def build_query(date: dt.date, categories: list[str]) -> str:
 
 def parse_feed(payload: bytes) -> tuple[list[Paper], int]:
     root = ET.fromstring(payload)
-    total_node = root.find("{http://a9.com/-/spec/opensearch/1.1/}totalResults")
-    total = int(total_node.text or 0) if total_node is not None else 0
-    papers: list[Paper] = []
-    for entry in root.findall(f"{ATOM}entry"):
+    if root.tag != f"{ATOM}feed":
+        raise ValueError("arXiv response is not an Atom feed")
+    entries = root.findall(f"{ATOM}entry")
+    for entry in entries:
         raw_id = (entry.findtext(f"{ATOM}id") or "").strip()
+        if urllib.parse.urlsplit(raw_id).path == "/api/errors":
+            detail = " ".join((entry.findtext(f"{ATOM}summary") or "Unknown API error").split())
+            raise ValueError(f"arXiv API error: {detail[:500]}")
+    total_node = root.find("{http://a9.com/-/spec/opensearch/1.1/}totalResults")
+    if total_node is None or not (total_node.text or "").strip():
+        raise ValueError("arXiv Atom response is missing totalResults")
+    total = int(total_node.text)
+    if total < 0 or len(entries) > total:
+        raise ValueError("arXiv Atom response has inconsistent totalResults")
+    papers: list[Paper] = []
+    for entry in entries:
+        raw_id = (entry.findtext(f"{ATOM}id") or "").strip()
+        if not raw_id or not (entry.findtext(f"{ATOM}title") or "").strip():
+            raise ValueError("arXiv Atom entry is missing its id or title")
         arxiv_id = raw_id.rsplit("/", 1)[-1]
         links = {node.attrib.get("type", ""): node.attrib.get("href", "") for node in entry.findall(f"{ATOM}link")}
         authors = [(node.findtext(f"{ATOM}name") or "").strip() for node in entry.findall(f"{ATOM}author")]
@@ -201,6 +215,57 @@ def _fetch_page(
             time.sleep(delay)
 
 
+def _query_urls(query: str, start: int, max_results: int) -> list[str]:
+    """Return equivalent API URLs to work around transient edge-cache 406s."""
+    values = {
+        "search_query": query,
+        "start": start,
+        "max_results": max_results,
+        "sortBy": "submittedDate",
+        "sortOrder": "descending",
+    }
+    variants: list[tuple[dict[str, object], str]] = [
+        (values, "plus"),
+        (values.copy(), "percent"),
+    ]
+    if max_results > 100:
+        reduced = values.copy()
+        reduced["max_results"] = min(max_results, 100)
+        variants.append((reduced, "percent"))
+    urls: list[str] = []
+    for variant, encoding in variants:
+        if encoding == "percent":
+            encoded = urllib.parse.urlencode(variant, quote_via=urllib.parse.quote)
+        else:
+            encoded = urllib.parse.urlencode(variant)
+        url = f"https://export.arxiv.org/api/query?{encoded}"
+        if url not in urls:
+            urls.append(url)
+    return urls
+
+
+def _fetch_page_with_fallbacks(
+    urls: list[str], getter: Callable[[str], bytes], *, attempts: int,
+    backoff_seconds: float, max_backoff_seconds: float,
+) -> tuple[list[Paper], int]:
+    for index, url in enumerate(urls):
+        try:
+            return _fetch_page(
+                url, getter, attempts=attempts,
+                backoff_seconds=backoff_seconds,
+                max_backoff_seconds=max_backoff_seconds,
+            )
+        except RuntimeError as exc:
+            if "HTTP 406" not in str(exc) or index == len(urls) - 1:
+                raise
+            print(
+                "arXiv returned HTTP 406; retrying with an alternate query form",
+                file=sys.stderr,
+                flush=True,
+            )
+    raise RuntimeError("No arXiv query URL was available")
+
+
 def fetch_arxiv(config: dict, *, get: Callable[[str], bytes] | None = None) -> list[Paper]:
     discovery = config["discovery"]
     request_attempts = int(discovery.get("request_attempts", 5))
@@ -214,6 +279,8 @@ def fetch_arxiv(config: dict, *, get: Callable[[str], bytes] | None = None) -> l
         backoff_seconds=request_backoff,
         rate_limit_backoff_seconds=rate_limit_backoff,
         max_backoff_seconds=max_backoff,
+        extra_retryable_statuses=(406,),
+        extra_rate_limit_statuses=(406,),
     ))
     categories = list(config["preferences"].get("categories") or [])
     if bool((discovery.get("window") or {}).get("enabled", False)):
@@ -229,20 +296,19 @@ def fetch_arxiv(config: dict, *, get: Callable[[str], bytes] | None = None) -> l
     start = 0
     total = None
     while len(papers) < limit and (total is None or start < total):
-        params = urllib.parse.urlencode({
-            "search_query": query, "start": start, "max_results": min(page_size, limit - len(papers)),
-            "sortBy": "submittedDate", "sortOrder": "descending",
-        })
-        batch, total = _fetch_page(
-            f"https://export.arxiv.org/api/query?{params}", getter,
+        batch, total = _fetch_page_with_fallbacks(
+            _query_urls(query, start, min(page_size, limit - len(papers))), getter,
             attempts=request_attempts,
             backoff_seconds=request_backoff,
             max_backoff_seconds=max_backoff,
         )
-        papers.extend(batch)
         if not batch:
+            if start < total:
+                raise RuntimeError(f"Incomplete arXiv response: empty page at {start} of {total}")
             break
+        papers.extend(batch)
         start += len(batch)
+        page_size = min(page_size, len(batch))
         if len(papers) < limit and start < total and get is None:
             time.sleep(delay)
     return papers[:limit]
